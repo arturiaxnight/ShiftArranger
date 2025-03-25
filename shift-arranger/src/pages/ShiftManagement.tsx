@@ -34,34 +34,42 @@ const ShiftManagement: React.FC = () => {
         },
         {
             id: '2',
+            name: '配器械班',
+            startTime: '07:30',
+            endTime: '17:30',
+            type: 'regular',
+            description: '配器械專責班別'
+        },
+        {
+            id: '3',
             name: '小夜班',
             startTime: '15:00',
             endTime: '23:00',
             type: 'regular'
         },
         {
-            id: '3',
+            id: '4',
             name: '大夜班',
             startTime: '23:00',
             endTime: '08:00',
             type: 'regular'
         },
         {
-            id: '4',
+            id: '5',
             name: '12-8班',
             startTime: '12:00',
             endTime: '20:00',
             type: 'regular'
         },
         {
-            id: '5',
+            id: '6',
             name: '9-5班',
             startTime: '09:00',
             endTime: '17:00',
             type: 'regular'
         },
         {
-            id: '6',
+            id: '7',
             name: '白班待命',
             startTime: '07:00',
             endTime: '15:00',
@@ -69,7 +77,7 @@ const ShiftManagement: React.FC = () => {
             description: '待命時間不計入工作時數'
         },
         {
-            id: '7',
+            id: '8',
             name: '小夜待命',
             startTime: '15:00',
             endTime: '23:00',
@@ -77,7 +85,7 @@ const ShiftManagement: React.FC = () => {
             description: '待命時間不計入工作時數'
         },
         {
-            id: '8',
+            id: '9',
             name: '大夜待命',
             startTime: '23:00',
             endTime: '07:00',
@@ -85,7 +93,7 @@ const ShiftManagement: React.FC = () => {
             description: '待命時間不計入工作時數'
         },
         {
-            id: '9',
+            id: '10',
             name: 'Off日待',
             startTime: '07:00',
             endTime: '19:00',
@@ -93,7 +101,7 @@ const ShiftManagement: React.FC = () => {
             description: '待命時間不計入工作時數'
         },
         {
-            id: '10',
+            id: '11',
             name: 'Off夜待',
             startTime: '19:00',
             endTime: '07:00',
@@ -101,14 +109,14 @@ const ShiftManagement: React.FC = () => {
             description: '待命時間不計入工作時數'
         },
         {
-            id: '11',
+            id: '12',
             name: '休假',
             startTime: '-',
             endTime: '-',
             type: 'off'
         },
         {
-            id: '12',
+            id: '13',
             name: '例假',
             startTime: '-',
             endTime: '-',
