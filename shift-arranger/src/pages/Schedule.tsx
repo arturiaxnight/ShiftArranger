@@ -1,6 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
-    Container,
     Typography,
     Paper,
     Table,
@@ -16,13 +15,11 @@ import {
     DialogTitle,
     DialogContent,
     DialogActions,
-    Drawer,
     List,
     ListItem,
     ListItemText,
     ListItemButton,
     Checkbox,
-    Divider,
     Alert,
     ListItemIcon,
     Snackbar,
@@ -30,19 +27,13 @@ import {
     MenuItem,
     FormControl,
     InputLabel,
-    RadioGroup,
-    FormControlLabel,
-    Radio
 } from '@mui/material';
 import {
     ChevronLeft as ChevronLeftIcon,
     ChevronRight as ChevronRightIcon,
     Add as AddIcon,
-    Close as CloseIcon,
-    Menu as MenuIcon,
     ErrorOutline as ErrorOutlineIcon,
     CheckCircleOutline as CheckCircleOutlineIcon,
-    AddCircleOutline as AddCircleOutlineIcon,
     Cancel as CancelIcon
 } from '@mui/icons-material';
 import ShiftAssignmentForm from '../components/ShiftAssignmentForm';
@@ -683,43 +674,39 @@ const checkSwapValidity = (
     return validationResults.length === 0; // Return true if NO errors
 };
 
+// Interface for the source part of the swap state, including original shift name
+interface SwapSourceInfo extends ShiftAssignment {
+    originalShiftName: string;
+}
+
 const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProps }) => {
-    const { drawerOpen } = useDrawer();
-    const [employees, setEmployees] = useState<Employee[]>(initialEmployeesFromProps);
-    const [currentDate, setCurrentDate] = useState<Date>(new Date());
-    const [selectedDate, setSelectedDate] = useState<string | null>(null);
+    const { drawerOpen, setDrawerOpen } = useDrawer();
+    const [currentDate, setCurrentDate] = useState(new Date());
     const [assignments, setAssignments] = useState<ShiftAssignment[]>([]);
-    const [openDialog, setOpenDialog] = useState(false);
-    const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-    const [assignmentToDelete, setAssignmentToDelete] = useState<ShiftAssignment | null>(null);
-    const [selectedEmployees, setSelectedEmployees] = useState<string[]>([]);
+    const [selectedDate, setSelectedDate] = useState<string | null>(null);
+    const [selectedAssignment, setSelectedAssignment] = useState<ShiftAssignment | null>(null);
+    const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
+    const [swapState, setSwapState] = useState<{ source: SwapSourceInfo | null, target: ShiftAssignment | null, stage: 'selectingTarget' | 'confirmingSwap' | 'selectingNewShift' | 'idle' }>({ source: null, target: null, stage: 'idle' });
     const [validationErrors, setValidationErrors] = useState<string[]>([]);
-    const [showSuccessSnackbar, setShowSuccessSnackbar] = useState(false);
-    const [showValidationErrorDialog, setShowValidationErrorDialog] = useState(false);
-    const [isEditMode, setIsEditMode] = useState(false);
-    const [swapStep, setSwapStep] = useState<'none' | 'selectNewShift' | 'selectTargetShift'>('none');
-    const [swapSourceInfo, setSwapSourceInfo] = useState<{ employeeId: string, date: string, originalShiftName: string } | null>(null);
-    const [swapSelectedNewShift, setSwapSelectedNewShift] = useState<string | null>(null);
-    const [selectNewShiftDialogOpen, setSelectNewShiftDialogOpen] = useState(false);
-    const [swapTargetInfo, setSwapTargetInfo] = useState<{ employeeId: string, date: string, originalShiftName: string } | null>(null);
-    const [swapConfirmDialogOpen, setSwapConfirmDialogOpen] = useState(false);
-    const [swapHistory, setSwapHistory] = useState<{
-        timestamp: string;
-        sourceEmployeeName: string;
-        sourceDate: string;
-        sourceOriginalShift: string;
-        sourceNewShift: string;
-        targetEmployeeName: string;
-        targetDate: string;
-        targetOriginalShift: string;
-        targetNewShift: string;
-    }[]>([]);
-    const [swapErrorSnackbarOpen, setSwapErrorSnackbarOpen] = useState(false);
-    const [swapErrorMessage, setSwapErrorMessage] = useState('');
+    const [snackbarOpen, setSnackbarOpen] = useState(false);
+    const [snackbarMessage, setSnackbarMessage] = useState('');
+    const [snackbarSeverity, setSnackbarSeverity] = useState<'success' | 'error' | 'warning' | 'info'>('info');
+    const [employees, setEmployeesInternal] = useState<Employee[]>(initialEmployeesFromProps);
+    const [selectedEmployees, setSelectedEmployees] = useState<string[]>(initialEmployeesFromProps.map(e => e.id));
+    const [swapHistory, setSwapHistory] = useState<string[]>([]);
+    const [newShiftForSource, setNewShiftForSource] = useState<string>('');
 
     useEffect(() => {
-        setSelectedEmployees(employees.map(emp => emp.id));
-    }, [employees]);
+        setEmployeesInternal(initialEmployeesFromProps);
+        // Update selected employees only if initial props change significantly (e.g., different set of employees)
+        // This simple check might need refinement based on how initialEmployeesFromProps changes.
+        if (JSON.stringify(initialEmployeesFromProps.map(e => e.id).sort()) !== JSON.stringify(selectedEmployees.sort())) {
+            setSelectedEmployees(initialEmployeesFromProps.map(e => e.id));
+        }
+        // Add initialEmployeesFromProps to dependency array if it's expected to change and trigger updates.
+        // Using JSON.stringify is a common way to handle object/array dependencies but can have performance implications.
+        // Consider more specific dependencies if possible.
+    }, [initialEmployeesFromProps]); // Dependency array fixed
 
     useEffect(() => {
         setAssignments([]);
@@ -748,7 +735,6 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
 
         const dateString = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
         setSelectedDate(dateString);
-        setOpenDialog(true);
     };
 
     const calendarData = generateCalendarData(currentDate.getFullYear(), currentDate.getMonth());
@@ -789,59 +775,51 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
                     }
                 ]);
             }
-            setOpenDialog(false);
         }
     };
 
     const handleDeleteClick = (assignment: ShiftAssignment) => {
-        setAssignmentToDelete(assignment);
-        setDeleteDialogOpen(true);
+        setSelectedAssignment(assignment);
+        setDeleteConfirmationOpen(true);
     };
 
     const handleConfirmDelete = () => {
-        if (assignmentToDelete) {
+        if (selectedAssignment) {
             setAssignments(assignments.filter(a =>
-                !(a.employeeId === assignmentToDelete.employeeId &&
-                    a.date === assignmentToDelete.date)
+                !(a.employeeId === selectedAssignment.employeeId &&
+                    a.date === selectedAssignment.date)
             ));
         }
-        setDeleteDialogOpen(false);
-        setAssignmentToDelete(null);
+        setDeleteConfirmationOpen(false);
+        setSelectedAssignment(null);
     };
 
     const handleCancelDelete = () => {
-        setDeleteDialogOpen(false);
-        setAssignmentToDelete(null);
+        setDeleteConfirmationOpen(false);
+        setSelectedAssignment(null);
     };
 
     const handleShiftClick = (assignment: ShiftAssignment) => {
-        if (!isEditMode) return;
-
-        if (swapStep === 'none') {
-            // Start Step 1: Select the new shift for the source
-            setSwapSourceInfo({
-                employeeId: assignment.employeeId,
-                date: assignment.date,
-                originalShiftName: assignment.shiftName
+        if (swapState.stage === 'idle') {
+            // Start Step 1: Initiate target selection, store original shift name
+            setSwapState({
+                source: { ...assignment, originalShiftName: assignment.shiftName },
+                target: null,
+                stage: 'selectingTarget'
             });
-            setSwapSelectedNewShift(assignment.shiftName);
-            setSwapStep('selectNewShift');
-            setSelectNewShiftDialogOpen(true);
-        } else if (swapStep === 'selectTargetShift' && swapSourceInfo && swapSelectedNewShift) {
-            // Handle Step 2: Selecting the target shift
+            setNewShiftForSource(assignment.shiftName);
+        } else if (swapState.stage === 'selectingTarget' && swapState.source) {
+            // Handle Step 2: Selecting the target
             const targetAssignment = assignment;
-            const sourceEmpId = swapSourceInfo.employeeId;
+            const sourceEmpId = swapState.source.employeeId;
 
-            // Ignore clicks on the source employee's shifts
-            if (targetAssignment.employeeId === sourceEmpId) {
-                console.log("Cannot select source employee's own shift as target.");
-                return;
-            }
+            // Ignore clicks on the source employee's shifts or the source assignment itself
+            if (targetAssignment.employeeId === sourceEmpId) return;
 
             // Check if the clicked target is valid
             const isValid = checkSwapValidity(
-                swapSourceInfo,
-                swapSelectedNewShift,
+                swapState.source,
+                newShiftForSource,
                 targetAssignment,
                 assignments,
                 employees,
@@ -851,142 +829,17 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
 
             if (isValid) {
                 console.log("Valid target selected:", targetAssignment);
-                setSwapTargetInfo({
-                    employeeId: targetAssignment.employeeId,
-                    date: targetAssignment.date,
-                    originalShiftName: targetAssignment.shiftName
-                });
-                setSwapConfirmDialogOpen(true); // Open confirmation dialog
+                setSwapState({ ...swapState, target: targetAssignment, stage: 'confirmingSwap' });
+                setSnackbarMessage(`已選擇目標: ${employees.find(e => e.id === targetAssignment.employeeId)?.name} (${targetAssignment.date} ${targetAssignment.shiftName}). 請確認或取消交換。`);
+                setSnackbarSeverity('info');
+                setSnackbarOpen(true);
             } else {
                 console.log("Invalid target selected:", targetAssignment);
-                // Optionally show a temporary message or rely on visual cues
-                setSwapErrorMessage("選擇的目標班別交換後會違反規則");
-                setSwapErrorSnackbarOpen(true);
+                setSnackbarMessage("選擇的目標班別交換後會違反規則");
+                setSnackbarSeverity('error');
+                setSnackbarOpen(true);
             }
         }
-    };
-
-    const handleSelectNewShiftChange = (event: React.ChangeEvent<{ value: unknown }>) => {
-        setSwapSelectedNewShift(event.target.value as string);
-    };
-
-    const handleSelectNewShiftConfirm = () => {
-        if (!swapSourceInfo || !swapSelectedNewShift) return; // Should not happen
-
-        // --- Check if ANY valid target exists BEFORE proceeding to Step 2 --- 
-        let foundValidTarget = false;
-        for (const potentialTarget of assignments) {
-            // Skip assignments belonging to the source employee
-            if (potentialTarget.employeeId === swapSourceInfo.employeeId) {
-                continue;
-            }
-
-            // Check validity
-            const isValid = checkSwapValidity(
-                swapSourceInfo,
-                swapSelectedNewShift,
-                potentialTarget,
-                assignments,
-                employees,
-                currentDate.getFullYear(),
-                currentDate.getMonth()
-            );
-
-            if (isValid) {
-                foundValidTarget = true;
-                break; // Found at least one, no need to check further
-            }
-        }
-        // --- End Check ---
-
-        if (foundValidTarget) {
-            // Proceed to Step 2 only if a valid target exists
-            setSwapStep('selectTargetShift');
-            setSelectNewShiftDialogOpen(false);
-            console.log(`Step 2: Source ${swapSourceInfo.employeeId} on ${swapSourceInfo.date} (original: ${swapSourceInfo.originalShiftName}) wants to become ${swapSelectedNewShift}. Found valid targets. Now select target.`);
-        } else {
-            // No valid targets found, show error and reset
-            setSwapErrorMessage("沒有找到任何可以與此班別進行有效交換的目標");
-            setSwapErrorSnackbarOpen(true);
-            handleSwapCancel(); // Reset the state immediately
-            console.log(`Swap aborted: No valid targets found for ${swapSourceInfo.employeeId} on ${swapSourceInfo.date} wanting to become ${swapSelectedNewShift}.`);
-        }
-    };
-
-    const handleSelectNewShiftCancel = () => {
-        handleSwapCancel(); // Use the generic cancel function
-    };
-
-    const handleConfirmSwap = () => {
-        if (!swapSourceInfo || !swapTargetInfo || !swapSelectedNewShift) return;
-
-        const sourceEmpId = swapSourceInfo.employeeId;
-        const sourceDate = swapSourceInfo.date;
-        const originalSourceShift = swapSourceInfo.originalShiftName;
-        const newSourceShift = swapSelectedNewShift;
-
-        const targetEmpId = swapTargetInfo.employeeId;
-        const targetDate = swapTargetInfo.date;
-        const originalTargetShift = swapTargetInfo.originalShiftName;
-
-        // Simulate again just to be safe before final validation? Or rely on check before dialog?
-        // Let's rely on the check done before opening the dialog (checkSwapValidity)
-
-        const simulatedAssignments = assignments.map(a => {
-            if (a.employeeId === sourceEmpId && a.date === sourceDate) {
-                return { ...a, shiftName: newSourceShift };
-            }
-            if (a.employeeId === targetEmpId && a.date === targetDate) {
-                return { ...a, shiftName: originalSourceShift }; // Target gets source's original
-            }
-            return a;
-        });
-
-        // Final validation (optional redundancy)
-        const sourceEmployee = employees.find(e => e.id === sourceEmpId);
-        const targetEmployee = employees.find(e => e.id === targetEmpId);
-        if (!sourceEmployee || !targetEmployee) return;
-        const validationResults = validateScheduleRules(simulatedAssignments, [sourceEmployee, targetEmployee], currentDate.getFullYear(), currentDate.getMonth());
-        if (validationResults.length > 0) {
-            setSwapErrorMessage(`換班失敗，最後檢查發現違反規則：${validationResults.join(' ')}`);
-            setSwapErrorSnackbarOpen(true);
-            handleSwapCancel();
-            return;
-        }
-
-        // Update state
-        setAssignments(simulatedAssignments);
-
-        // --- Update History with Simplified Format ---
-        const sourceEmpName = sourceEmployee.name;
-        const targetEmpName = targetEmployee.name;
-        setSwapHistory(prev => [
-            {
-                timestamp: new Date().toLocaleString('zh-TW'),
-                sourceEmployeeName: sourceEmpName,
-                sourceDate: sourceDate,
-                sourceOriginalShift: originalSourceShift,
-                sourceNewShift: newSourceShift, // The shift source selected
-                targetEmployeeName: targetEmpName,
-                targetDate: targetDate,
-                targetOriginalShift: originalTargetShift,
-                targetNewShift: originalSourceShift // The shift target received
-            },
-            ...prev // Add to the beginning for most recent first
-        ]);
-
-        // Reset swap state
-        handleSwapCancel();
-    };
-
-    const handleSwapCancel = () => {
-        setSwapStep('none');
-        setSwapSourceInfo(null);
-        setSwapSelectedNewShift(null);
-        setSwapTargetInfo(null);
-        setSelectNewShiftDialogOpen(false);
-        setSwapConfirmDialogOpen(false);
-        // Highlighting will automatically reset
     };
 
     const handleValidateSchedule = () => {
@@ -994,10 +847,13 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
         const errors = validateScheduleRules(assignments, employees, currentDate.getFullYear(), currentDate.getMonth());
         setValidationErrors(errors);
         if (errors.length > 0) {
-            setShowValidationErrorDialog(true);
+            setSnackbarMessage("排班規則檢查發現問題，請檢查以下錯誤：");
+            setSnackbarSeverity('warning');
+            setSnackbarOpen(true);
         } else {
-            setShowSuccessSnackbar(true);
-            setShowValidationErrorDialog(false);
+            setSnackbarMessage("排班規則檢查完畢，未發現問題！");
+            setSnackbarSeverity('success');
+            setSnackbarOpen(true);
         }
         console.log("Validation errors:", errors);
     };
@@ -1006,7 +862,7 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
         if (reason === 'clickaway') {
             return;
         }
-        setShowSuccessSnackbar(false);
+        setSnackbarOpen(false);
     };
 
     const handleGenerateTestSchedule = () => {
@@ -1052,31 +908,31 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
             border: '1px solid transparent',
             fontSize: '0.8rem',
             position: 'relative', // Ensure parent is relative for absolute child (delete button)
-            cursor: isEditMode ? 'pointer' : 'default',
+            cursor: 'default',
             backgroundColor: colorPalette.main,
             color: '#fff',
-            textAlign: isEditMode ? 'left' : 'center', // Conditional alignment
+            textAlign: 'center', // Conditional alignment
             minWidth: '70px',
             margin: '1px 0',
             opacity: 1,
             transition: 'opacity 0.3s ease, background-color 0.3s ease, border 0.3s ease',
             // Add paddingRight in edit mode to avoid overlap with delete btn
-            paddingRight: isEditMode ? '20px' : '4px',
+            paddingRight: '4px',
         };
 
         let dynamicStyle: React.CSSProperties = {};
 
-        if (isEditMode && swapStep === 'selectTargetShift' && swapSourceInfo && swapSelectedNewShift) {
-            const isSourceAssignment = assignment.employeeId === swapSourceInfo.employeeId && assignment.date === swapSourceInfo.date;
-            const isSourceEmployee = assignment.employeeId === swapSourceInfo.employeeId;
+        if (swapState.stage === 'selectingTarget' && swapState.source && swapState.target) {
+            const isSourceAssignment = assignment.employeeId === swapState.source.employeeId && assignment.date === swapState.source.date;
+            const isSourceEmployee = assignment.employeeId === swapState.source.employeeId;
             if (isSourceAssignment) {
                 dynamicStyle = { border: '2px solid #ffcc00', cursor: 'not-allowed' };
             } else if (isSourceEmployee) {
                 dynamicStyle = { opacity: 0.4, cursor: 'not-allowed' };
             } else {
                 const isValidTarget = checkSwapValidity(
-                    swapSourceInfo,
-                    swapSelectedNewShift,
+                    swapState.source,
+                    newShiftForSource,
                     assignment,
                     assignments,
                     employees,
@@ -1133,15 +989,6 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
                         startIcon={<CheckCircleOutlineIcon />}
                     >
                         檢查規則
-                    </Button>
-                    <Button
-                        variant={isEditMode ? "contained" : "outlined"}
-                        color="info"
-                        onClick={() => setIsEditMode(!isEditMode)}
-                        size="small"
-                        sx={{ ml: 1 }}
-                    >
-                        {isEditMode ? "完成編輯" : "編輯班表"}
                     </Button>
                     <Button
                         variant="contained"
@@ -1296,31 +1143,6 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
                                                                     >
                                                                         {`${shift.employeeName} - ${shift.shiftName}`}
                                                                     </Typography>
-                                                                    {isEditMode && swapStep === 'none' && (
-                                                                        <IconButton
-                                                                            aria-label="delete assignment"
-                                                                            size="small"
-                                                                            onClick={(e) => {
-                                                                                e.stopPropagation();
-                                                                                handleDeleteClick(assignmentData);
-                                                                            }}
-                                                                            sx={{
-                                                                                position: 'absolute',
-                                                                                top: 1,
-                                                                                right: 1,
-                                                                                padding: '1px',
-                                                                                color: 'rgba(255, 255, 255, 0.7)',
-                                                                                backgroundColor: 'rgba(0, 0, 0, 0.1)',
-                                                                                '&:hover': {
-                                                                                    color: '#fff',
-                                                                                    backgroundColor: 'rgba(0, 0, 0, 0.3)'
-                                                                                },
-                                                                                zIndex: 2,
-                                                                            }}
-                                                                        >
-                                                                            <CancelIcon sx={{ fontSize: '14px' }} />
-                                                                        </IconButton>
-                                                                    )}
                                                                 </Box>
                                                             );
                                                         })}
@@ -1337,8 +1159,8 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
             </Box>
 
             <Dialog
-                open={openDialog}
-                onClose={() => setOpenDialog(false)}
+                open={selectedDate !== null}
+                onClose={() => setSelectedDate(null)}
                 maxWidth="sm"
                 fullWidth
             >
@@ -1357,25 +1179,25 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
                     )}
                 </DialogContent>
                 <DialogActions>
-                    <Button onClick={() => setOpenDialog(false)} color="inherit">
+                    <Button onClick={() => setSelectedDate(null)} color="inherit">
                         取消
                     </Button>
                 </DialogActions>
             </Dialog>
 
             <Dialog
-                open={deleteDialogOpen}
+                open={deleteConfirmationOpen}
                 onClose={handleCancelDelete}
                 maxWidth="xs"
                 fullWidth
             >
                 <DialogTitle>確認刪除</DialogTitle>
                 <DialogContent>
-                    {assignmentToDelete && (
+                    {selectedAssignment && (
                         <Typography>
-                            確定要刪除 {assignmentToDelete.date}
-                            {employees.find(e => e.id === assignmentToDelete.employeeId)?.name} 的
-                            {assignmentToDelete.shiftName} 班別嗎？
+                            確定要刪除 {selectedAssignment.date}
+                            {employees.find(e => e.id === selectedAssignment.employeeId)?.name} 的
+                            {selectedAssignment.shiftName} 班別嗎？
                         </Typography>
                     )}
                 </DialogContent>
@@ -1390,195 +1212,15 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
             </Dialog>
 
             <Snackbar
-                open={showSuccessSnackbar}
+                open={snackbarOpen}
                 autoHideDuration={4000}
                 onClose={handleCloseSnackbar}
                 anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
             >
-                <Alert onClose={handleCloseSnackbar} severity="success" sx={{ width: '100%' }}>
-                    排班規則檢查完畢，未發現問題！
+                <Alert onClose={handleCloseSnackbar} severity={snackbarSeverity} sx={{ width: '100%' }}>
+                    {snackbarMessage}
                 </Alert>
             </Snackbar>
-
-            <Dialog
-                open={showValidationErrorDialog}
-                onClose={() => setShowValidationErrorDialog(false)}
-                maxWidth="md"
-            >
-                <DialogTitle sx={{ display: 'flex', alignItems: 'center' }}>
-                    <ErrorOutlineIcon sx={{ mr: 1, color: 'error.main' }} />
-                    排班規則檢查結果
-                </DialogTitle>
-                <DialogContent dividers>
-                    <List dense>
-                        {validationErrors.map((error, index) => (
-                            <ListItem key={index}>
-                                <ListItemIcon sx={{ minWidth: '30px' }}>
-                                    <ErrorOutlineIcon fontSize="small" color="error" />
-                                </ListItemIcon>
-                                <ListItemText primary={error} />
-                            </ListItem>
-                        ))}
-                    </List>
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setShowValidationErrorDialog(false)} color="primary">
-                        關閉
-                    </Button>
-                </DialogActions>
-            </Dialog>
-
-            <Dialog open={selectNewShiftDialogOpen} onClose={handleSelectNewShiftCancel}>
-                <DialogTitle>選擇新班別</DialogTitle>
-                <DialogContent>
-                    {swapSourceInfo && (
-                        <Typography sx={{ mb: 2 }}>
-                            您希望將 <strong>{employees.find(e => e.id === swapSourceInfo.employeeId)?.name}</strong> 在 <strong>{formatShortDate(swapSourceInfo.date)}</strong> 的班別
-                            (原: <strong>{swapSourceInfo.originalShiftName}</strong>) 更換成：
-                        </Typography>
-                    )}
-                    <FormControl fullWidth>
-                        <InputLabel id="select-new-shift-label">新班別</InputLabel>
-                        <Select
-                            labelId="select-new-shift-label"
-                            value={swapSelectedNewShift ?? ''}
-                            label="新班別"
-                            onChange={(e) => setSwapSelectedNewShift(e.target.value as string)}
-                        >
-                            {allShiftNames.map(shiftName => (
-                                <MenuItem key={shiftName} value={shiftName}>
-                                    {shiftName}
-                                </MenuItem>
-                            ))}
-                        </Select>
-                    </FormControl>
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={handleSelectNewShiftCancel}>取消</Button>
-                    <Button onClick={handleSelectNewShiftConfirm} variant="contained" disabled={!swapSelectedNewShift}>確認</Button>
-                </DialogActions>
-            </Dialog>
-
-            <Dialog open={swapConfirmDialogOpen} onClose={handleSwapCancel}>
-                <DialogTitle>確認換班？</DialogTitle>
-                <DialogContent>
-                    {swapSourceInfo && swapTargetInfo && swapSelectedNewShift && (
-                        (() => {
-                            const sourceEmp = employees.find(e => e.id === swapSourceInfo.employeeId);
-                            const targetEmp = employees.find(e => e.id === swapTargetInfo.employeeId);
-                            if (!sourceEmp || !targetEmp) return null;
-                            const sourceDateShort = formatShortDate(swapSourceInfo.date);
-                            const targetDateShort = formatShortDate(swapTargetInfo.date);
-                            return (
-                                <Typography>
-                                    確認將 <strong>{sourceEmp.name}</strong> 在 <strong>{sourceDateShort}</strong> 的班
-                                    (原: <strong>{swapSourceInfo.originalShiftName}</strong> → 新: <strong>{swapSelectedNewShift}</strong>)
-                                    <br />
-                                    與 <strong>{targetEmp.name}</strong> 在 <strong>{targetDateShort}</strong> 的班
-                                    (原: <strong>{swapTargetInfo.originalShiftName}</strong>)
-                                    交換嗎？
-                                    <br /><br />
-                                    <small>(交換後，<strong>{targetEmp.name}</strong> 在 <strong>{targetDateShort}</strong> 會變成 <strong>{swapSourceInfo.originalShiftName}</strong>)</small>
-                                </Typography>
-                            );
-                        })()
-                    )}
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={handleSwapCancel}>取消</Button>
-                    <Button onClick={handleConfirmSwap} color="primary" variant="contained">
-                        確認交換
-                    </Button>
-                </DialogActions>
-            </Dialog>
-
-            <Snackbar
-                open={swapErrorSnackbarOpen}
-                autoHideDuration={6000}
-                onClose={() => setSwapErrorSnackbarOpen(false)}
-                anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
-            >
-                <Alert onClose={() => setSwapErrorSnackbarOpen(false)} severity="error" sx={{ width: '100%' }}>
-                    {swapErrorMessage}
-                </Alert>
-            </Snackbar>
-
-            <Paper sx={{ mt: 2, p: 2, overflowX: 'auto', flexShrink: 0 }}>
-                <Typography variant="h6" sx={{ mb: 2 }}>
-                    本月班別統計
-                </Typography>
-                <Table size="small" sx={{ minWidth: 1000 }}>
-                    <TableHead>
-                        <TableRow>
-                            <TableCell>員工姓名</TableCell>
-                            <TableCell align="center">總上班天數</TableCell>
-                            <TableCell align="center">白班</TableCell>
-                            <TableCell align="center">配器械班</TableCell>
-                            <TableCell align="center">小夜班</TableCell>
-                            <TableCell align="center">大夜班</TableCell>
-                            <TableCell align="center">12-8班</TableCell>
-                            <TableCell align="center">9-5班</TableCell>
-                            <TableCell align="center">白班待命</TableCell>
-                            <TableCell align="center">小夜待命</TableCell>
-                            <TableCell align="center">大夜待命</TableCell>
-                            <TableCell align="center">Off日待</TableCell>
-                            <TableCell align="center">Off夜待</TableCell>
-                            <TableCell align="center">休假</TableCell>
-                            <TableCell align="center">例假</TableCell>
-                        </TableRow>
-                    </TableHead>
-                    <TableBody>
-                        {employees.map(employee => {
-                            const stats = calculateShiftStatistics(assignments, employees)[employee.id] || {};
-                            return (
-                                <TableRow key={employee.id}>
-                                    <TableCell>{employee.name}</TableCell>
-                                    <TableCell align="center" sx={{ color: (stats['總上班天數'] || 0) < 11 ? 'error.main' : 'inherit' }}>
-                                        {stats['總上班天數'] || 0}
-                                    </TableCell>
-                                    <TableCell align="center">{stats['白班'] || 0}</TableCell>
-                                    <TableCell align="center">{stats['配器械班'] || 0}</TableCell>
-                                    <TableCell align="center" sx={{ color: (stats['小夜班'] || 0) >= 15 ? 'orange' : 'inherit' }}>
-                                        {stats['小夜班'] || 0}
-                                    </TableCell>
-                                    <TableCell align="center" sx={{ color: (stats['大夜班'] || 0) >= 15 ? 'orange' : 'inherit' }}>
-                                        {stats['大夜班'] || 0}
-                                    </TableCell>
-                                    <TableCell align="center">{stats['12-8班'] || 0}</TableCell>
-                                    <TableCell align="center">{stats['9-5班'] || 0}</TableCell>
-                                    <TableCell align="center">{stats['白班待命'] || 0}</TableCell>
-                                    <TableCell align="center">{stats['小夜待命'] || 0}</TableCell>
-                                    <TableCell align="center">{stats['大夜待命'] || 0}</TableCell>
-                                    <TableCell align="center">{stats['Off日待'] || 0}</TableCell>
-                                    <TableCell align="center">{stats['Off夜待'] || 0}</TableCell>
-                                    <TableCell align="center">{stats['休假'] || 0}</TableCell>
-                                    <TableCell align="center">{stats['例假'] || 0}</TableCell>
-                                </TableRow>
-                            );
-                        })}
-                    </TableBody>
-                </Table>
-            </Paper>
-
-            {swapHistory.length > 0 && (
-                <Paper sx={{ mt: 2, p: 2 }}>
-                    <Typography variant="h6" sx={{ mb: 2 }}>
-                        換班歷史紀錄
-                    </Typography>
-                    <List dense>
-                        {swapHistory.map((record, index) => {
-                            const sourceDateShort = formatShortDate(record.sourceDate);
-                            const targetDateShort = formatShortDate(record.targetDate);
-                            const historyString = `[${record.timestamp}] ${record.sourceEmployeeName} (${sourceDateShort}: ${record.sourceOriginalShift} → ${record.sourceNewShift}) 與 ${record.targetEmployeeName} (${targetDateShort}: ${record.targetOriginalShift} → ${record.targetNewShift}) 交換`;
-                            return (
-                                <ListItem key={index} divider>
-                                    <ListItemText primary={historyString} />
-                                </ListItem>
-                            );
-                        })}
-                    </List>
-                </Paper>
-            )}
         </Box>
     );
 };

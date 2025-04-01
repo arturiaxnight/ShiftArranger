@@ -10,7 +10,7 @@ import {
     Alert,
     Button,
 } from '@mui/material';
-import { addDays, subDays, parse, format, eachDayOfInterval, differenceInHours } from 'date-fns';
+import { addDays, subDays, parse, format, differenceInHours } from 'date-fns';
 import { isBefore } from 'date-fns';
 
 interface Employee {
@@ -162,68 +162,6 @@ const checkTimeInterval = (
                 }
             }
         }
-    }
-
-    return { isValid: true, message: null };
-};
-
-// 檢查休假規則的函數
-const checkRestDayRules = (
-    date: string,
-    employeeId: string,
-    existingAssignments: Assignment[],
-    selectedShiftId: string,
-    shiftDetailsMap: Map<string, ShiftDetails>
-): { isValid: boolean; message: string | null } => {
-    const selectedDate = parse(date, 'yyyy-MM-dd', new Date());
-    const startDate = subDays(selectedDate, 6);
-
-    let hasRestDay = false;
-    let hasMandatoryOff = false;
-
-    const assignmentsInWindow = existingAssignments.filter(a => {
-        if (a.employeeId !== employeeId) return false;
-        try {
-            const assignmentDate = parse(a.date, 'yyyy-MM-dd', new Date());
-            return !isBefore(assignmentDate, startDate) && !isBefore(addDays(selectedDate, 1), assignmentDate);
-        } catch { return false; }
-    });
-
-    const shiftToAdd = shifts.find(s => s.id === selectedShiftId);
-    const shiftToAddDetails = shiftToAdd ? shiftDetailsMap.get(shiftToAdd.name) : null;
-
-    if (shiftToAddDetails && shiftToAddDetails.isOffShift) {
-        return { isValid: true, message: null };
-    }
-
-    if (shiftToAddDetails && !shiftToAddDetails.isOffShift) {
-        const windowEndingYesterday = subDays(selectedDate, 1);
-        const startWindowYesterday = subDays(windowEndingYesterday, 6);
-        existingAssignments.filter(a => {
-            if (a.employeeId !== employeeId) return false;
-            try {
-                const assignmentDate = parse(a.date, 'yyyy-MM-dd', new Date());
-                return !isBefore(assignmentDate, startWindowYesterday) && !isBefore(addDays(windowEndingYesterday, 1), assignmentDate);
-            } catch { return false; }
-        }).forEach(a => {
-            const details = shiftDetailsMap.get(a.shiftName);
-            if (details?.isRestDay) hasRestDay = true;
-            if (details?.isMandatoryOff) hasMandatoryOff = true;
-        });
-    }
-
-    if (!hasRestDay) {
-        return {
-            isValid: false,
-            message: '每7天內必須安排至少1天休假，請先安排休假'
-        };
-    }
-
-    if (!hasMandatoryOff) {
-        return {
-            isValid: false,
-            message: '每7天內必須安排至少1天例假，請先安排例假'
-        };
     }
 
     return { isValid: true, message: null };
