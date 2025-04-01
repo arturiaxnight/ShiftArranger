@@ -12,7 +12,6 @@ interface Employee {
     id: string;
     name: string;
     employeeId: string;
-    position: string;
 }
 
 interface EmployeeFormDialogProps {
@@ -31,7 +30,6 @@ const EmployeeFormDialog: React.FC<EmployeeFormDialogProps> = ({
     const [formData, setFormData] = React.useState<Omit<Employee, 'id'>>({
         name: employee?.name || '',
         employeeId: employee?.employeeId || '',
-        position: '護理師', // 預設職位
     });
 
     React.useEffect(() => {
@@ -39,13 +37,11 @@ const EmployeeFormDialog: React.FC<EmployeeFormDialogProps> = ({
             setFormData({
                 name: employee.name,
                 employeeId: employee.employeeId,
-                position: '護理師',
             });
         } else {
             setFormData({
                 name: '',
                 employeeId: '',
-                position: '護理師',
             });
         }
     }, [employee]);

@@ -10,7 +10,8 @@ import {
     Alert,
     Button,
 } from '@mui/material';
-import { addDays, subDays, parse, format, eachDayOfInterval } from 'date-fns';
+import { addDays, subDays, parse, format, eachDayOfInterval, differenceInHours } from 'date-fns';
+import { isBefore } from 'date-fns';
 
 interface Employee {
     id: string;
@@ -32,24 +33,32 @@ interface Assignment {
     shiftName: string;
 }
 
+interface ShiftDetails {
+    name: string;
+    startTime: string;
+    endTime: string;
+    isWorkShift: boolean;
+    isOffShift: boolean;
+    isRestDay: boolean;
+    isMandatoryOff: boolean;
+}
+
 interface ShiftAssignmentFormProps {
     date: string;
     employees: Employee[];
-    existingAssignments: {
-        employeeId: string;
-        date: string;
-        shiftName: string;
-    }[];
+    existingAssignments: Assignment[];
     onAssign: (employeeId: string, shiftName: string) => void;
+    shiftDetailsMap: Map<string, ShiftDetails>;
 }
 
-const shifts = [
+const shifts: Shift[] = [
     // 一般班別
     { id: 'white', name: '白班', startTime: '07:30', endTime: '15:30', type: 'regular' },
-    { id: 'evening', name: '小夜班', startTime: '15:30', endTime: '23:00', type: 'regular' },
+    { id: 'evening', name: '小夜班', startTime: '15:00', endTime: '23:00', type: 'regular' },
     { id: 'night', name: '大夜班', startTime: '23:00', endTime: '08:00', type: 'regular' },
     { id: '12-8', name: '12-8班', startTime: '12:00', endTime: '20:00', type: 'regular' },
     { id: '9-5', name: '9-5班', startTime: '09:00', endTime: '17:00', type: 'regular' },
+    { id: 'instrument', name: '配器械班', startTime: '07:30', endTime: '17:30', type: 'regular' },
 
     // 待命班別
     { id: 'white-standby', name: '白班待命', startTime: '07:00', endTime: '15:00', type: 'standby' },
@@ -63,72 +72,93 @@ const shifts = [
     { id: 'holiday', name: '例假', startTime: '-', endTime: '-', type: 'holiday' }
 ];
 
+// Helper function to get date object from assignment
+const getShiftDateTime = (assignmentDate: string, timeStr: string): Date | null => {
+    if (!timeStr || timeStr === '-') return null; // Handle invalid time string
+    try {
+        // Ensure assignmentDate is just the date part
+        const datePart = assignmentDate.split(' ')[0];
+        return parse(`${datePart} ${timeStr}`, 'yyyy-MM-dd HH:mm', new Date());
+    } catch (e) {
+        console.error("Error parsing date/time:", assignmentDate, timeStr, e);
+        return null;
+    }
+};
+
+// Helper to check if a shift spans midnight
+const doesShiftSpanMidnight = (shiftName: string, shiftDetailsMap: Map<string, ShiftDetails>): boolean => {
+    const details = shiftDetailsMap.get(shiftName);
+    if (!details || !details.startTime || !details.endTime || details.startTime === '-' || details.endTime === '-') return false;
+    // More robust check considering parsing
+    try {
+        const start = parse(details.startTime, 'HH:mm', new Date());
+        const end = parse(details.endTime, 'HH:mm', new Date());
+        return isBefore(end, start); // Use date-fns isBefore for reliable comparison
+    } catch {
+        return false;
+    }
+};
+
 // 檢查時間間隔的函數
 const checkTimeInterval = (
     date: string,
     employeeId: string,
-    shiftToCheck: typeof shifts[0],
-    existingAssignments: {
-        employeeId: string;
-        date: string;
-        shiftName: string;
-    }[]
+    shiftToCheck: Shift,
+    existingAssignments: Assignment[],
+    shiftDetailsMap: Map<string, ShiftDetails>
 ): { isValid: boolean; message: string | null } => {
-    // 解析當前選擇的班別時間
     const currentDate = parse(date, 'yyyy-MM-dd', new Date());
     const prevDay = format(subDays(currentDate, 1), 'yyyy-MM-dd');
     const nextDay = format(addDays(currentDate, 1), 'yyyy-MM-dd');
 
-    // 獲取前一天和後一天的排班
-    const prevDayShift = existingAssignments.find(
+    const prevDayAssignment = existingAssignments.find(
         a => a.employeeId === employeeId && a.date === prevDay
     );
-    const nextDayShift = existingAssignments.find(
+    const nextDayAssignment = existingAssignments.find(
         a => a.employeeId === employeeId && a.date === nextDay
     );
 
-    // 檢查與前一天班別的時間間隔
-    if (prevDayShift) {
-        const prevShift = shifts.find(s => s.name === prevDayShift.shiftName);
-        if (prevShift) {
-            const prevEndTime = parse(prevShift.endTime, 'HH:mm', new Date());
-            const currentStartTime = parse(shiftToCheck.startTime, 'HH:mm', new Date());
+    const shiftToCheckDetails = shiftDetailsMap.get(shiftToCheck.name);
+    if (!shiftToCheckDetails?.isWorkShift) return { isValid: true, message: null };
 
-            // 如果前一天是大夜班，結束時間要加一天
-            const prevEndHour = prevShift.id === 'night' ?
-                prevEndTime.getHours() + 24 :
-                prevEndTime.getHours();
-
-            const hourDiff = (currentStartTime.getHours() + 24) - prevEndHour;
-
-            if (hourDiff < 12) {
-                return {
-                    isValid: false,
-                    message: `與前一天的${prevShift.name}間隔不足12小時`
-                };
+    if (prevDayAssignment) {
+        const prevShiftDetails = shiftDetailsMap.get(prevDayAssignment.shiftName);
+        if (prevShiftDetails?.isWorkShift) {
+            const prevEndTimeStr = prevShiftDetails.endTime;
+            const currentStartTimeStr = shiftToCheckDetails.startTime;
+            if (prevEndTimeStr && currentStartTimeStr && prevEndTimeStr !== '-' && currentStartTimeStr !== '-') {
+                let prevEndDateTime = getShiftDateTime(prevDayAssignment.date, prevEndTimeStr);
+                let currentStartDateTime = getShiftDateTime(date, currentStartTimeStr);
+                if (prevEndDateTime && currentStartDateTime) {
+                    if (doesShiftSpanMidnight(prevDayAssignment.shiftName, shiftDetailsMap)) {
+                        prevEndDateTime = addDays(prevEndDateTime, 1);
+                    }
+                    const intervalHours = differenceInHours(currentStartDateTime, prevEndDateTime);
+                    if (intervalHours < 12) {
+                        return { isValid: false, message: `與前一天 ${prevDayAssignment.shiftName} 間隔不足12小時` };
+                    }
+                }
             }
         }
     }
 
-    // 檢查與後一天班別的時間間隔
-    if (nextDayShift) {
-        const nextShift = shifts.find(s => s.name === nextDayShift.shiftName);
-        if (nextShift) {
-            const currentEndTime = parse(shiftToCheck.endTime, 'HH:mm', new Date());
-            const nextStartTime = parse(nextShift.startTime, 'HH:mm', new Date());
-
-            // 如果當前選擇是大夜班，結束時間要加一天
-            const currentEndHour = shiftToCheck.id === 'night' ?
-                currentEndTime.getHours() + 24 :
-                currentEndTime.getHours();
-
-            const hourDiff = (nextStartTime.getHours() + 24) - currentEndHour;
-
-            if (hourDiff < 12) {
-                return {
-                    isValid: false,
-                    message: `與後一天的${nextShift.name}間隔不足12小時`
-                };
+    if (nextDayAssignment) {
+        const nextShiftDetails = shiftDetailsMap.get(nextDayAssignment.shiftName);
+        if (nextShiftDetails?.isWorkShift) {
+            const currentEndTimeStr = shiftToCheckDetails.endTime;
+            const nextStartTimeStr = nextShiftDetails.startTime;
+            if (currentEndTimeStr && nextStartTimeStr && currentEndTimeStr !== '-' && nextStartTimeStr !== '-') {
+                let currentEndDateTime = getShiftDateTime(date, currentEndTimeStr);
+                let nextStartDateTime = getShiftDateTime(nextDayAssignment.date, nextStartTimeStr);
+                if (currentEndDateTime && nextStartDateTime) {
+                    if (doesShiftSpanMidnight(shiftToCheck.name, shiftDetailsMap)) {
+                        currentEndDateTime = addDays(currentEndDateTime, 1);
+                    }
+                    const intervalHours = differenceInHours(nextStartDateTime, currentEndDateTime);
+                    if (intervalHours < 12) {
+                        return { isValid: false, message: `與後一天 ${nextDayAssignment.shiftName} 間隔不足12小時` };
+                    }
+                }
             }
         }
     }
@@ -140,62 +170,55 @@ const checkTimeInterval = (
 const checkRestDayRules = (
     date: string,
     employeeId: string,
-    existingAssignments: {
-        employeeId: string;
-        date: string;
-        shiftName: string;
-    }[],
-    selectedShiftType: string
+    existingAssignments: Assignment[],
+    selectedShiftId: string,
+    shiftDetailsMap: Map<string, ShiftDetails>
 ): { isValid: boolean; message: string | null } => {
-    // 解析選擇的日期
     const selectedDate = parse(date, 'yyyy-MM-dd', new Date());
+    const startDate = subDays(selectedDate, 6);
 
-    // 計算前後 7 天的日期範圍
-    const startDate = subDays(selectedDate, 3);
-    const endDate = addDays(selectedDate, 3);
+    let hasRestDay = false;
+    let hasMandatoryOff = false;
 
-    // 獲取日期範圍內的所有日期
-    const dateRange = eachDayOfInterval({ start: startDate, end: endDate })
-        .map(d => format(d, 'yyyy-MM-dd'));
+    const assignmentsInWindow = existingAssignments.filter(a => {
+        if (a.employeeId !== employeeId) return false;
+        try {
+            const assignmentDate = parse(a.date, 'yyyy-MM-dd', new Date());
+            return !isBefore(assignmentDate, startDate) && !isBefore(addDays(selectedDate, 1), assignmentDate);
+        } catch { return false; }
+    });
 
-    // 獲取日期範圍內該員工的所有排班
-    const weeklyAssignments = [
-        ...existingAssignments.filter(a =>
-            a.employeeId === employeeId &&
-            dateRange.includes(a.date)
-        ),
-        // 加入當前要新增的班別
-        {
-            employeeId,
-            date,
-            shiftName: shifts.find(s => s.id === selectedShiftType)?.name || ''
-        }
-    ];
+    const shiftToAdd = shifts.find(s => s.id === selectedShiftId);
+    const shiftToAddDetails = shiftToAdd ? shiftDetailsMap.get(shiftToAdd.name) : null;
 
-    // 計算休假和例假的數量
-    const offDays = weeklyAssignments.filter(a =>
-        shifts.find(s => s.name === a.shiftName && s.type === 'off')
-    ).length;
-
-    const holidays = weeklyAssignments.filter(a =>
-        shifts.find(s => s.name === a.shiftName && s.type === 'holiday')
-    ).length;
-
-    // 如果選擇的是休假或例假，不需要進行檢查
-    const selectedShift = shifts.find(s => s.id === selectedShiftType);
-    if (selectedShift && (selectedShift.type === 'off' || selectedShift.type === 'holiday')) {
+    if (shiftToAddDetails && shiftToAddDetails.isOffShift) {
         return { isValid: true, message: null };
     }
 
-    // 檢查是否符合規則
-    if (offDays === 0) {
+    if (shiftToAddDetails && !shiftToAddDetails.isOffShift) {
+        const windowEndingYesterday = subDays(selectedDate, 1);
+        const startWindowYesterday = subDays(windowEndingYesterday, 6);
+        existingAssignments.filter(a => {
+            if (a.employeeId !== employeeId) return false;
+            try {
+                const assignmentDate = parse(a.date, 'yyyy-MM-dd', new Date());
+                return !isBefore(assignmentDate, startWindowYesterday) && !isBefore(addDays(windowEndingYesterday, 1), assignmentDate);
+            } catch { return false; }
+        }).forEach(a => {
+            const details = shiftDetailsMap.get(a.shiftName);
+            if (details?.isRestDay) hasRestDay = true;
+            if (details?.isMandatoryOff) hasMandatoryOff = true;
+        });
+    }
+
+    if (!hasRestDay) {
         return {
             isValid: false,
             message: '每7天內必須安排至少1天休假，請先安排休假'
         };
     }
 
-    if (holidays === 0) {
+    if (!hasMandatoryOff) {
         return {
             isValid: false,
             message: '每7天內必須安排至少1天例假，請先安排例假'
@@ -210,81 +233,76 @@ const ShiftAssignmentForm: React.FC<ShiftAssignmentFormProps> = ({
     employees,
     existingAssignments,
     onAssign,
+    shiftDetailsMap,
 }) => {
     const [selectedEmployee, setSelectedEmployee] = useState<string>('');
     const [selectedShift, setSelectedShift] = useState<string>('');
     const [error, setError] = useState<string | null>(null);
 
-    // 檢查員工在指定日期是否已經被排班
     const isEmployeeAssigned = (employeeId: string) => {
         return existingAssignments.some(a => a.employeeId === employeeId && a.date === date);
     };
 
-    // 檢查班別是否可以被選擇
-    const isShiftDisabled = (shift: typeof shifts[0]): boolean => {
+    const isShiftDisabled = (shift: Shift): boolean => {
         if (!selectedEmployee) return false;
-        const { isValid } = checkTimeInterval(date, selectedEmployee, shift, existingAssignments);
+        const { isValid } = checkTimeInterval(date, selectedEmployee, shift, existingAssignments, shiftDetailsMap);
         return !isValid;
     };
 
-    // 處理員工選擇
     const handleEmployeeChange = (event: SelectChangeEvent) => {
         setSelectedEmployee(event.target.value);
-        setSelectedShift(''); // 重置班別選擇
+        setSelectedShift('');
         setError(null);
     };
 
-    // 處理班別選擇
     const handleShiftChange = (event: SelectChangeEvent) => {
         const shiftId = event.target.value;
         const selectedShiftData = shifts.find(s => s.id === shiftId);
 
         if (selectedShiftData && selectedEmployee) {
-            // 檢查時間間隔
             const timeIntervalCheck = checkTimeInterval(
                 date,
                 selectedEmployee,
                 selectedShiftData,
-                existingAssignments
+                existingAssignments,
+                shiftDetailsMap
             );
 
             if (!timeIntervalCheck.isValid) {
                 setError(timeIntervalCheck.message);
+                setSelectedShift('');
                 return;
             }
 
-            // 檢查休假規則
             const restDayCheck = checkRestDayRules(
                 date,
                 selectedEmployee,
                 existingAssignments,
-                shiftId
+                shiftId,
+                shiftDetailsMap
             );
-
             if (!restDayCheck.isValid) {
                 setError(restDayCheck.message);
+                setSelectedShift('');
                 return;
             }
-        }
 
-        setSelectedShift(shiftId);
-        setError(null);
+            setError(null);
+            setSelectedShift(shiftId);
+        }
     };
 
-    // 處理確認排班
     const handleConfirm = () => {
-        if (selectedEmployee && selectedShift && !error) {
-            const shift = shifts.find(s => s.id === selectedShift);
-            if (shift) {
-                onAssign(selectedEmployee, shift.name);
-                setSelectedEmployee('');
-                setSelectedShift('');
+        if (selectedEmployee && selectedShift) {
+            const shiftName = shifts.find(s => s.id === selectedShift)?.name;
+            if (shiftName) {
+                onAssign(selectedEmployee, shiftName);
             }
         }
     };
 
     return (
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 2 }}>
+        <Box component="form" noValidate autoComplete="off" sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
             <Typography variant="subtitle1" gutterBottom>
                 選擇員工和班別
             </Typography>
@@ -296,8 +314,9 @@ const ShiftAssignmentForm: React.FC<ShiftAssignmentFormProps> = ({
             )}
 
             <FormControl fullWidth>
-                <InputLabel>員工</InputLabel>
+                <InputLabel id="employee-select-label">員工</InputLabel>
                 <Select
+                    labelId="employee-select-label"
                     value={selectedEmployee}
                     label="員工"
                     onChange={handleEmployeeChange}
@@ -308,19 +327,20 @@ const ShiftAssignmentForm: React.FC<ShiftAssignmentFormProps> = ({
                             value={employee.id}
                             disabled={isEmployeeAssigned(employee.id)}
                         >
-                            {employee.name} ({employee.employeeId})
+                            {employee.name} {isEmployeeAssigned(employee.id) ? '(本日已有排班)' : ''}
                         </MenuItem>
                     ))}
                 </Select>
             </FormControl>
 
-            <FormControl fullWidth>
-                <InputLabel>班別</InputLabel>
+            <FormControl fullWidth disabled={!selectedEmployee}>
+                <InputLabel id="shift-select-label">班別</InputLabel>
                 <Select
+                    labelId="shift-select-label"
                     value={selectedShift}
                     label="班別"
                     onChange={handleShiftChange}
-                    disabled={!selectedEmployee}
+                    error={!!error}
                 >
                     {shifts.map((shift) => (
                         <MenuItem
@@ -328,10 +348,11 @@ const ShiftAssignmentForm: React.FC<ShiftAssignmentFormProps> = ({
                             value={shift.id}
                             disabled={isShiftDisabled(shift)}
                         >
-                            {shift.name} ({shift.startTime}-{shift.endTime})
+                            {shift.name}
                         </MenuItem>
                     ))}
                 </Select>
+                {error && <Alert severity="warning" sx={{ mt: 1 }}>{error}</Alert>}
             </FormControl>
 
             <Button

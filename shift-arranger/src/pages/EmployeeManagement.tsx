@@ -21,32 +21,39 @@ import {
 import EmployeeFormDialog from '../components/EmployeeFormDialog';
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog';
 
-// 定義員工資料介面
+// 定義員工資料介面 (保持與 App.tsx 一致，移除 position)
 interface Employee {
     id: string;
     name: string;
     employeeId: string;
-    position: string;
+    // position: string; // 移除職位
 }
 
-const EmployeeManagement: React.FC = () => {
-    // 模擬員工資料
-    const [employees, setEmployees] = useState<Employee[]>([
-        {
-            id: '1',
-            name: '張三',
-            employeeId: 'EMP001',
-            position: '護理師'
-        },
-        {
-            id: '2',
-            name: '李四',
-            employeeId: 'EMP002',
-            position: '護理師'
-        }
-    ]);
+// 定義 props interface
+interface EmployeeManagementProps {
+    employees: Employee[];
+    setEmployees: React.Dispatch<React.SetStateAction<Employee[]>>;
+}
 
-    // 對話框狀態
+// 修改元件定義以接收 props
+const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ employees, setEmployees }) => {
+    // // 移除元件內部的 employees 狀態管理
+    // const [employees, setEmployees] = useState<Employee[]>([
+    //     {
+    //         id: '1',
+    //         name: '張三',
+    //         employeeId: 'EMP001',
+    //         position: '護理師'
+    //     },
+    //     {
+    //         id: '2',
+    //         name: '李四',
+    //         employeeId: 'EMP002',
+    //         position: '護理師'
+    //     }
+    // ]);
+
+    // 對話框狀態 (保留)
     const [formDialogOpen, setFormDialogOpen] = useState(false);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [selectedEmployee, setSelectedEmployee] = useState<Employee | undefined>();
@@ -69,30 +76,34 @@ const EmployeeManagement: React.FC = () => {
         setDeleteDialogOpen(true);
     };
 
-    // 處理表單提交
+    // 處理表單提交 (使用從 props 傳入的 setEmployees)
     const handleFormSubmit = (employeeData: Omit<Employee, 'id'>) => {
         if (selectedEmployee) {
             // 編輯現有員工
-            setEmployees(employees.map(emp =>
-                emp.id === selectedEmployee.id
-                    ? { ...employeeData, id: selectedEmployee.id }
-                    : emp
-            ));
+            setEmployees(prevEmployees => // 使用函數式更新
+                prevEmployees.map(emp =>
+                    emp.id === selectedEmployee.id
+                        ? { ...employeeData, id: selectedEmployee.id }
+                        : emp
+                )
+            );
         } else {
             // 新增員工
             const newEmployee = {
                 ...employeeData,
                 id: Date.now().toString(), // 簡單的 ID 生成方式
             };
-            setEmployees([...employees, newEmployee]);
+            setEmployees(prevEmployees => [...prevEmployees, newEmployee]); // 使用函數式更新
         }
         setFormDialogOpen(false);
     };
 
-    // 處理確認刪除
+    // 處理確認刪除 (使用從 props 傳入的 setEmployees)
     const handleConfirmDelete = () => {
         if (selectedEmployee) {
-            setEmployees(employees.filter(emp => emp.id !== selectedEmployee.id));
+            setEmployees(prevEmployees => // 使用函數式更新
+                prevEmployees.filter(emp => emp.id !== selectedEmployee.id)
+            );
             setDeleteDialogOpen(false);
         }
     };
