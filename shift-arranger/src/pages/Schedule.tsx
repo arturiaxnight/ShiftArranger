@@ -23,18 +23,12 @@ import {
     Alert,
     ListItemIcon,
     Snackbar,
-    Select,
-    MenuItem,
-    FormControl,
-    InputLabel,
 } from '@mui/material';
 import {
     ChevronLeft as ChevronLeftIcon,
     ChevronRight as ChevronRightIcon,
     Add as AddIcon,
-    ErrorOutline as ErrorOutlineIcon,
     CheckCircleOutline as CheckCircleOutlineIcon,
-    Cancel as CancelIcon
 } from '@mui/icons-material';
 import ShiftAssignmentForm from '../components/ShiftAssignmentForm';
 import { useDrawer } from '../contexts/DrawerContext';
@@ -405,7 +399,6 @@ const generateTestSchedule = (year: number, month: number, employees: Employee[]
             let tracker = employeeTrackers[empId];
             const prevAssignmentDateStr = tracker.prevAssignmentDate;
             let chosenShift: string | null = mandatoryAssignmentsToday[empId] ?? null; // Get pre-assigned mandatory shift if any
-            let isMandatoryChoice = !!chosenShift;
 
             // If no mandatory shift was assigned, determine the shift
             if (!chosenShift) {
@@ -646,7 +639,6 @@ const checkSwapValidity = (
     const originalSourceShift = sourceInfo.originalShiftName;
     const targetEmpId = targetAssignment.employeeId;
     const targetDate = targetAssignment.date;
-    const originalTargetShift = targetAssignment.shiftName;
 
     // Rule 1: Cannot swap with self (already handled by disabling source employee's other shifts)
     if (sourceEmpId === targetEmpId) return false;
@@ -680,37 +672,43 @@ interface SwapSourceInfo extends ShiftAssignment {
 }
 
 const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProps }) => {
-    const { drawerOpen, setDrawerOpen } = useDrawer();
+    const { drawerOpen } = useDrawer();
     const [currentDate, setCurrentDate] = useState(new Date());
     const [assignments, setAssignments] = useState<ShiftAssignment[]>([]);
     const [selectedDate, setSelectedDate] = useState<string | null>(null);
     const [selectedAssignment, setSelectedAssignment] = useState<ShiftAssignment | null>(null);
     const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
     const [swapState, setSwapState] = useState<{ source: SwapSourceInfo | null, target: ShiftAssignment | null, stage: 'selectingTarget' | 'confirmingSwap' | 'selectingNewShift' | 'idle' }>({ source: null, target: null, stage: 'idle' });
-    const [validationErrors, setValidationErrors] = useState<string[]>([]);
     const [snackbarOpen, setSnackbarOpen] = useState(false);
     const [snackbarMessage, setSnackbarMessage] = useState('');
     const [snackbarSeverity, setSnackbarSeverity] = useState<'success' | 'error' | 'warning' | 'info'>('info');
     const [employees, setEmployeesInternal] = useState<Employee[]>(initialEmployeesFromProps);
     const [selectedEmployees, setSelectedEmployees] = useState<string[]>(initialEmployeesFromProps.map(e => e.id));
-    const [swapHistory, setSwapHistory] = useState<string[]>([]);
     const [newShiftForSource, setNewShiftForSource] = useState<string>('');
 
-    useEffect(() => {
-        setEmployeesInternal(initialEmployeesFromProps);
-        // Update selected employees only if initial props change significantly (e.g., different set of employees)
-        // This simple check might need refinement based on how initialEmployeesFromProps changes.
-        if (JSON.stringify(initialEmployeesFromProps.map(e => e.id).sort()) !== JSON.stringify(selectedEmployees.sort())) {
-            setSelectedEmployees(initialEmployeesFromProps.map(e => e.id));
-        }
-        // Add initialEmployeesFromProps to dependency array if it's expected to change and trigger updates.
-        // Using JSON.stringify is a common way to handle object/array dependencies but can have performance implications.
-        // Consider more specific dependencies if possible.
-    }, [initialEmployeesFromProps]); // Dependency array fixed
+    // Dependency for the second useEffect
+    const initialEmployeeIdsString = JSON.stringify(initialEmployeesFromProps.map(e => e.id).sort());
+    const selectedEmployeesString = JSON.stringify(selectedEmployees.sort());
 
+    // First useEffect: Reset assignments on month/year change
     useEffect(() => {
         setAssignments([]);
     }, [currentDate.getFullYear(), currentDate.getMonth()]);
+
+    // Second useEffect: Update internal employees state based on props
+    useEffect(() => {
+        setEmployeesInternal(initialEmployeesFromProps);
+        if (initialEmployeeIdsString !== selectedEmployeesString) {
+            setSelectedEmployees(initialEmployeesFromProps.map(e => e.id));
+        }
+    }, [initialEmployeesFromProps, initialEmployeeIdsString, selectedEmployeesString]); // Added extracted strings
+
+    // Third useEffect: Added dependency for selectedEmployees (example usage, can be adapted)
+    useEffect(() => {
+        // Example: Log when selected employees change
+        console.log('Selected employees updated:', selectedEmployees);
+        // If you need to perform actions based on selectedEmployees, do it here
+    }, [selectedEmployees]); // Added selectedEmployees dependency
 
     const handleDateClick = (year: number, month: number, day: number, isCurrentMonth: boolean) => {
         let targetYear = year;
@@ -845,7 +843,6 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
     const handleValidateSchedule = () => {
         console.log("Validating schedule...");
         const errors = validateScheduleRules(assignments, employees, currentDate.getFullYear(), currentDate.getMonth());
-        setValidationErrors(errors);
         if (errors.length > 0) {
             setSnackbarMessage("排班規則檢查發現問題，請檢查以下錯誤：");
             setSnackbarSeverity('warning');
@@ -888,16 +885,6 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
             setSelectedEmployees(employees.map(emp => emp.id));
         }
     };
-
-    const formatShortDate = (dateStr: string): string => {
-        try {
-            return format(parse(dateStr, 'yyyy-MM-dd', new Date()), 'MM/dd');
-        } catch {
-            return dateStr;
-        }
-    };
-
-    const allShiftNames = Array.from(shiftDetailsMap.keys());
 
     // --- Calculate Highlighting/Disabled State (UPDATED with Alignment) ---
     const getShiftBoxStyle = (assignment: ShiftAssignment): React.CSSProperties => {
