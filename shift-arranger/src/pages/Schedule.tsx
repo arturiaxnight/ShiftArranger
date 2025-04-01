@@ -23,12 +23,17 @@ import {
     Alert,
     ListItemIcon,
     Snackbar,
+    FormControl,
+    InputLabel,
+    Select,
+    MenuItem,
 } from '@mui/material';
 import {
     ChevronLeft as ChevronLeftIcon,
     ChevronRight as ChevronRightIcon,
     Add as AddIcon,
     CheckCircleOutline as CheckCircleOutlineIcon,
+    Cancel as CancelIcon,
 } from '@mui/icons-material';
 import ShiftAssignmentForm from '../components/ShiftAssignmentForm';
 import { useDrawer } from '../contexts/DrawerContext';
@@ -503,24 +508,6 @@ const getShiftColor = (shiftName: string) => {
     return shiftColorMap[shiftName] || { main: '#757575', light: '#eeeeee' }; // 默認灰色
 };
 
-// 修改函數定義
-const getShiftDisplays = (
-    date: string | null,
-    assignments: ShiftAssignment[],
-    employees: Employee[]
-): ShiftDisplay[] => {
-    if (!date) return [];
-    const dayAssignments = assignments.filter(a => a.date === date);
-    return dayAssignments.map(assignment => {
-        const employee = employees.find((e: Employee) => e.employeeId === assignment.employeeId);
-        return {
-            employeeId: assignment.employeeId,
-            employeeName: employee ? employee.name : '未知員工',
-            shiftName: assignment.shiftName
-        };
-    });
-};
-
 const getFilteredShiftDisplays = (
     date: string | null,
     assignments: ShiftAssignment[],
@@ -598,6 +585,49 @@ interface SwapSourceInfo extends ShiftAssignment {
     originalShiftName: string;
 }
 
+// --- Re-add calculateShiftStatistics function ---
+const calculateShiftStatistics = (assignments: ShiftAssignment[], employees: Employee[]) => {
+    const statistics: { [key: string]: { [key: string]: number } } = {};
+
+    // Initialize statistics object
+    employees.forEach(emp => {
+        statistics[emp.id] = {
+            '總上班天數': 0,
+            '白班': 0,
+            '配器械班': 0,
+            '小夜班': 0,
+            '大夜班': 0,
+            '12-8班': 0,
+            '9-5班': 0,
+            '白班待命': 0,
+            '小夜待命': 0,
+            '大夜待命': 0,
+            'Off日待': 0,
+            'Off夜待': 0,
+            '休假': 0,
+            '例假': 0
+        };
+    });
+
+    // Calculate shift counts for each employee
+    assignments.forEach(assignment => {
+        const employee = employees.find(e => e.id === assignment.employeeId);
+        if (employee && statistics[employee.id]) {
+            const shiftDetails = shiftDetailsMap.get(assignment.shiftName);
+            if (shiftDetails && statistics[employee.id][assignment.shiftName] !== undefined) {
+                statistics[employee.id][assignment.shiftName]++;
+                if (shiftDetails.isWorkShift) {
+                    statistics[employee.id]['總上班天數']++;
+                }
+            } else {
+                console.warn(`Unknown shift name found during statistics: ${assignment.shiftName}`);
+            }
+        }
+    });
+
+    return statistics;
+};
+
 const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProps }) => {
     const { drawerOpen } = useDrawer();
     const [currentDate, setCurrentDate] = useState(new Date());
@@ -612,22 +642,32 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
     const [employees, setEmployeesInternal] = useState<Employee[]>(initialEmployeesFromProps);
     const [selectedEmployees, setSelectedEmployees] = useState<string[]>(initialEmployeesFromProps.map(e => e.id));
     const [newShiftForSource, setNewShiftForSource] = useState<string>('');
+    const [isEditMode, setIsEditMode] = useState(false);
+    const [selectNewShiftDialogOpen, setSelectNewShiftDialogOpen] = useState(false);
+    const [dialogSelectedShift, setDialogSelectedShift] = useState<string>('');
+    const [swapHistory, setSwapHistory] = useState<string[]>([]);
+
+    // Pre-calculate the IDs from props outside the effect
+    const initialEmployeeIds = initialEmployeesFromProps.map(e => e.id);
+
+    // Re-calculate allShiftNames
+    const allShiftNames = Array.from(shiftDetailsMap.keys());
 
     // First useEffect: Reset assignments on month/year change
     useEffect(() => {
         setAssignments([]);
     }, [currentDate.getFullYear(), currentDate.getMonth()]);
 
-    // Second useEffect: Update internal employees state based on props (Refactored)
+    // Second useEffect: Update internal employees state based on props
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     useEffect(() => {
         setEmployeesInternal(initialEmployeesFromProps);
-        // Perform comparison inside the effect
-        const currentInitialIdsString = JSON.stringify(initialEmployeesFromProps.map(e => e.id).sort());
-        const currentSelectedIdsString = JSON.stringify(selectedEmployees.sort());
-        if (currentInitialIdsString !== currentSelectedIdsString) {
-            setSelectedEmployees(initialEmployeesFromProps.map(e => e.id));
+        const currentSelectedIdsSorted = [...selectedEmployees].sort();
+        const initialEmployeeIdsSorted = [...initialEmployeeIds].sort();
+        if (JSON.stringify(currentSelectedIdsSorted) !== JSON.stringify(initialEmployeeIdsSorted)) {
+            setSelectedEmployees(initialEmployeeIds);
         }
-    }, [initialEmployeesFromProps, selectedEmployees]); // Keep selectedEmployees here if its update logic depends on it, or remove if update logic is purely based on props change
+    }, [initialEmployeesFromProps]); // Depend only on the prop, disable warning for selectedEmployees usage inside
 
     // Third useEffect: Example dependency on selectedEmployees
     useEffect(() => {
@@ -700,11 +740,6 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
         }
     };
 
-    const handleDeleteClick = (assignment: ShiftAssignment) => {
-        setSelectedAssignment(assignment);
-        setDeleteConfirmationOpen(true);
-    };
-
     const handleConfirmDelete = () => {
         if (selectedAssignment) {
             setAssignments(assignments.filter(a =>
@@ -722,14 +757,17 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
     };
 
     const handleShiftClick = (assignment: ShiftAssignment) => {
+        if (!isEditMode) return;
+
         if (swapState.stage === 'idle') {
-            // Start Step 1: Initiate target selection, store original shift name
+            // Start Step 1: Open the dialog to select the new shift
             setSwapState({
                 source: { ...assignment, originalShiftName: assignment.shiftName },
                 target: null,
-                stage: 'selectingTarget'
+                stage: 'selectingNewShift'
             });
-            setNewShiftForSource(assignment.shiftName);
+            setDialogSelectedShift(assignment.shiftName);
+            setSelectNewShiftDialogOpen(true);
         } else if (swapState.stage === 'selectingTarget' && swapState.source) {
             // Handle Step 2: Selecting the target
             const targetAssignment = assignment;
@@ -764,11 +802,85 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
         }
     };
 
+    const handleSelectNewShiftConfirm = () => {
+        if (!swapState.source || !dialogSelectedShift) return;
+
+        setNewShiftForSource(dialogSelectedShift);
+        setSwapState({ ...swapState, stage: 'selectingTarget' });
+        setSelectNewShiftDialogOpen(false);
+        setSnackbarMessage(`請點擊您想交換的目標班別`);
+        setSnackbarSeverity('info');
+        setSnackbarOpen(true);
+    };
+
+    const handleSelectNewShiftCancel = () => {
+        setSelectNewShiftDialogOpen(false);
+        setSwapState({ source: null, target: null, stage: 'idle' });
+        setDialogSelectedShift('');
+    };
+
+    const handleSwapCancel = () => {
+        setSwapState({ source: null, target: null, stage: 'idle' });
+        setNewShiftForSource('');
+        setSelectNewShiftDialogOpen(false);
+    };
+
+    const handleExecuteSwap = () => {
+        if (!swapState.source || !swapState.target || !newShiftForSource) return;
+
+        const sourceEmpId = swapState.source.employeeId;
+        const sourceDate = swapState.source.date;
+        const originalSourceShift = swapState.source.originalShiftName;
+
+        const targetEmpId = swapState.target.employeeId;
+        const targetDate = swapState.target.date;
+        const originalTargetShift = swapState.target.shiftName;
+
+        // Final validation before execution (redundant but safe)
+        const isValid = checkSwapValidity(swapState.source, newShiftForSource, swapState.target, assignments, employees, currentDate.getFullYear(), currentDate.getMonth());
+        if (!isValid) {
+            setSnackbarMessage("換班無效，最後驗證失敗。請重新操作。");
+            setSnackbarSeverity('error');
+            setSnackbarOpen(true);
+            handleSwapCancel();
+            return;
+        }
+
+        // Perform the swap
+        const updatedAssignments = assignments.map(a => {
+            if (a.employeeId === sourceEmpId && a.date === sourceDate) {
+                return { ...a, shiftName: newShiftForSource };
+            }
+            if (a.employeeId === targetEmpId && a.date === targetDate) {
+                return { ...a, shiftName: originalSourceShift };
+            }
+            return a;
+        });
+        setAssignments(updatedAssignments);
+
+        // Log history, show success message, reset state
+        const sourceEmpName = employees.find(e => e.id === sourceEmpId)?.name || '未知';
+        const targetEmpName = employees.find(e => e.id === targetEmpId)?.name || '未知';
+
+        // --- Re-add history logging ---
+        const historyString = `[${new Date().toLocaleString('zh-TW')}] ${sourceEmpName} (${sourceDate} ${originalSourceShift} -> ${newShiftForSource}) 與 ${targetEmpName} (${targetDate} ${originalTargetShift} -> ${originalSourceShift}) 交換`;
+        setSwapHistory(prev => [historyString, ...prev]); // Add to the beginning of the history array
+        // --- End history logging ---
+
+        setSnackbarMessage(`成功交換：${sourceEmpName} (${sourceDate}) 與 ${targetEmpName} (${targetDate})`);
+        setSnackbarSeverity('success');
+        setSnackbarOpen(true);
+        console.log(`Swap executed: ${sourceEmpName} (${sourceDate} ${originalSourceShift} -> ${newShiftForSource}) <-> ${targetEmpName} (${targetDate} ${originalTargetShift} -> ${originalSourceShift})`);
+        handleSwapCancel();
+    };
+
     const handleValidateSchedule = () => {
         console.log("Validating schedule...");
         const errors = validateScheduleRules(assignments, employees, currentDate.getFullYear(), currentDate.getMonth());
         if (errors.length > 0) {
-            setSnackbarMessage("排班規則檢查發現問題，請檢查以下錯誤：");
+            // Join errors with newline character
+            const errorMessages = errors.join('\n'); // Use newline separator
+            setSnackbarMessage(`排班規則檢查發現問題：\n${errorMessages}`); // Add newline before messages
             setSnackbarSeverity('warning');
             setSnackbarOpen(true);
         } else {
@@ -814,26 +926,24 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
     const getShiftBoxStyle = (assignment: ShiftAssignment): React.CSSProperties => {
         const colorPalette = getShiftColor(assignment.shiftName);
         const baseStyle: React.CSSProperties = {
-            padding: '2px 4px', // Adjusted base padding slightly
+            padding: '2px 4px',
             borderRadius: '4px',
             border: '1px solid transparent',
             fontSize: '0.8rem',
-            position: 'relative', // Ensure parent is relative for absolute child (delete button)
-            cursor: 'default',
+            position: 'relative',
+            cursor: isEditMode ? 'pointer' : 'default',
             backgroundColor: colorPalette.main,
             color: '#fff',
-            textAlign: 'center', // Conditional alignment
+            textAlign: 'center',
             minWidth: '70px',
             margin: '1px 0',
             opacity: 1,
             transition: 'opacity 0.3s ease, background-color 0.3s ease, border 0.3s ease',
-            // Add paddingRight in edit mode to avoid overlap with delete btn
-            paddingRight: '4px',
         };
 
         let dynamicStyle: React.CSSProperties = {};
 
-        if (swapState.stage === 'selectingTarget' && swapState.source && swapState.target) {
+        if (swapState.stage === 'selectingTarget' && swapState.source) {
             const isSourceAssignment = assignment.employeeId === swapState.source.employeeId && assignment.date === swapState.source.date;
             const isSourceEmployee = assignment.employeeId === swapState.source.employeeId;
             if (isSourceAssignment) {
@@ -858,8 +968,8 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
             }
         }
 
-        // Add hover effect (only if clickable)
-        const hoverStyle = (dynamicStyle.cursor !== 'not-allowed' && baseStyle.cursor !== 'default') ? { // Check base cursor too
+        // Hover effect (only if clickable in edit mode)
+        const hoverStyle = isEditMode && dynamicStyle.cursor !== 'not-allowed' ? {
             '&:hover': {
                 backgroundColor: colorPalette.light,
                 filter: 'brightness(1.1)'
@@ -891,6 +1001,15 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
                     <IconButton onClick={() => handleMonthChange(1)} size="small">
                         <ChevronRightIcon />
                     </IconButton>
+                    <Button
+                        variant={isEditMode ? "contained" : "outlined"}
+                        color="info"
+                        onClick={() => setIsEditMode(!isEditMode)}
+                        size="small"
+                        sx={{ ml: 1 }}
+                    >
+                        {isEditMode ? "完成編輯" : "編輯班表"}
+                    </Button>
                     <Button
                         variant="outlined"
                         color="secondary"
@@ -962,112 +1081,279 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
                 </Paper>
 
                 <Paper sx={{ flexGrow: 1, overflow: 'auto' }}>
-                    <TableContainer component={Paper} sx={{ mt: 2, position: 'relative', zIndex: 1 }}>
-                        <Table stickyHeader aria-label="sticky schedule table">
-                            <TableHead>
-                                <TableRow>
-                                    {weekDayNames.map((day) => (
-                                        <TableCell
-                                            key={day}
-                                            align="center"
-                                            sx={{
-                                                position: 'sticky',
-                                                top: 0,
-                                                backgroundColor: 'background.paper',
-                                                zIndex: 1,
-                                                borderBottom: '2px solid #ccc'
-                                            }}
-                                        >
-                                            {day}
-                                        </TableCell>
-                                    ))}
-                                </TableRow>
-                            </TableHead>
-                            <TableBody>
-                                {calendarData.map((week, weekIndex) => (
-                                    <TableRow key={weekIndex}>
-                                        {week.map((day, dayIndex) => {
-                                            let targetYear = currentDate.getFullYear();
-                                            let targetMonth = currentDate.getMonth();
-                                            if (!day.isCurrentMonth) {
-                                                if (day.day > 20) { targetMonth--; if (targetMonth < 0) { targetMonth = 11; targetYear--; } }
-                                                else { targetMonth++; if (targetMonth > 11) { targetMonth = 0; targetYear++; } }
-                                            }
-                                            const dateStr = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}-${String(day.day).padStart(2, '0')}`;
-                                            const displays = getFilteredShiftDisplays(dateStr, assignments, employees, selectedEmployees);
-
-                                            return (
-                                                <TableCell
-                                                    key={`${weekIndex}-${dayIndex}`}
-                                                    align="left"
-                                                    valign="top"
-                                                    sx={{
-                                                        border: '1px solid #eee',
-                                                        height: 150,
-                                                        overflow: 'hidden',
-                                                        bgcolor: day.isCurrentMonth ? 'background.paper' : '#f5f5f5',
-                                                        position: 'relative',
-                                                        p: 0.5
-                                                    }}
-                                                >
-                                                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
-                                                        <Typography
-                                                            variant="body2"
-                                                            sx={{ fontWeight: day.isCurrentMonth ? 'bold' : 'normal', color: day.isCurrentMonth ? 'text.primary' : 'text.secondary' }}
-                                                        >
-                                                            {day.day}
-                                                        </Typography>
-                                                        {day.isCurrentMonth && (
-                                                            <IconButton
-                                                                size="small"
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    handleDateClick(currentDate.getFullYear(), currentDate.getMonth(), day.day, day.isCurrentMonth);
-                                                                }}
-                                                                aria-label={`add shift for day ${day.day}`}
-                                                                sx={{ padding: 0.2 }}
-                                                            >
-                                                                <AddIcon fontSize="inherit" />
-                                                            </IconButton>
-                                                        )}
-                                                    </Box>
-
-                                                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-                                                        {displays.map((shift, index) => {
-                                                            const assignmentData = { employeeId: shift.employeeId, date: dateStr, shiftName: shift.shiftName };
-                                                            return (
-                                                                <Box
-                                                                    key={`${shift.employeeId}-${index}`}
-                                                                    onClick={() => handleShiftClick(assignmentData)}
-                                                                    className="shift-box"
-                                                                    sx={getShiftBoxStyle(assignmentData)}
-                                                                >
-                                                                    <Typography
-                                                                        variant="caption"
-                                                                        sx={{
-                                                                            overflow: 'hidden',
-                                                                            textOverflow: 'ellipsis',
-                                                                            whiteSpace: 'nowrap',
-                                                                            lineHeight: 1.2,
-                                                                            display: 'block',
-                                                                        }}
-                                                                    >
-                                                                        {`${shift.employeeName} - ${shift.shiftName}`}
-                                                                    </Typography>
-                                                                </Box>
-                                                            );
-                                                        })}
-                                                    </Box>
-                                                </TableCell>
-                                            );
-                                        })}
+                    <Box>
+                        <TableContainer component={Paper} sx={{ mt: 2, position: 'relative', zIndex: 1 }}>
+                            <Table stickyHeader aria-label="sticky schedule table">
+                                <TableHead>
+                                    <TableRow>
+                                        {weekDayNames.map((day) => (
+                                            <TableCell
+                                                key={day}
+                                                align="center"
+                                                sx={{
+                                                    position: 'sticky',
+                                                    top: 0,
+                                                    backgroundColor: 'background.paper',
+                                                    zIndex: 1,
+                                                    borderBottom: '2px solid #ccc'
+                                                }}
+                                            >
+                                                {day}
+                                            </TableCell>
+                                        ))}
                                     </TableRow>
-                                ))}
-                            </TableBody>
-                        </Table>
-                    </TableContainer>
+                                </TableHead>
+                                <TableBody>
+                                    {calendarData.map((week, weekIndex) => (
+                                        <TableRow key={weekIndex}>
+                                            {week.map((day, dayIndex) => {
+                                                let targetYear = currentDate.getFullYear();
+                                                let targetMonth = currentDate.getMonth();
+                                                if (!day.isCurrentMonth) {
+                                                    if (day.day > 20) { targetMonth--; if (targetMonth < 0) { targetMonth = 11; targetYear--; } }
+                                                    else { targetMonth++; if (targetMonth > 11) { targetMonth = 0; targetYear++; } }
+                                                }
+                                                const dateStr = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}-${String(day.day).padStart(2, '0')}`;
+                                                const displays = getFilteredShiftDisplays(dateStr, assignments, employees, selectedEmployees);
+
+                                                return (
+                                                    <TableCell
+                                                        key={`${weekIndex}-${dayIndex}`}
+                                                        align="left"
+                                                        valign="top"
+                                                        sx={{
+                                                            border: '1px solid #eee',
+                                                            height: 150,
+                                                            overflow: 'hidden',
+                                                            bgcolor: day.isCurrentMonth ? 'background.paper' : '#f5f5f5',
+                                                            position: 'relative',
+                                                            p: 0.5
+                                                        }}
+                                                    >
+                                                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
+                                                            <Typography
+                                                                variant="body2"
+                                                                sx={{ fontWeight: day.isCurrentMonth ? 'bold' : 'normal', color: day.isCurrentMonth ? 'text.primary' : 'text.secondary' }}
+                                                            >
+                                                                {day.day}
+                                                            </Typography>
+                                                            {day.isCurrentMonth && (
+                                                                <IconButton
+                                                                    size="small"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        handleDateClick(currentDate.getFullYear(), currentDate.getMonth(), day.day, day.isCurrentMonth);
+                                                                    }}
+                                                                    aria-label={`add shift for day ${day.day}`}
+                                                                    sx={{ padding: 0.2 }}
+                                                                >
+                                                                    <AddIcon fontSize="inherit" />
+                                                                </IconButton>
+                                                            )}
+                                                        </Box>
+
+                                                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                                                            {displays.map((shift, index) => {
+                                                                const assignmentData = { employeeId: shift.employeeId, date: dateStr, shiftName: shift.shiftName };
+                                                                return (
+                                                                    <Box
+                                                                        key={`${shift.employeeId}-${index}`}
+                                                                        onClick={() => handleShiftClick(assignmentData)}
+                                                                        className="shift-box"
+                                                                        sx={getShiftBoxStyle(assignmentData)}
+                                                                    >
+                                                                        <Typography
+                                                                            variant="caption"
+                                                                            sx={{
+                                                                                overflow: 'hidden',
+                                                                                textOverflow: 'ellipsis',
+                                                                                whiteSpace: 'nowrap',
+                                                                                lineHeight: 1.2,
+                                                                                display: 'block',
+                                                                            }}
+                                                                        >
+                                                                            {`${shift.employeeName} - ${shift.shiftName}`}
+                                                                        </Typography>
+                                                                        {isEditMode && swapState.stage === 'idle' && (
+                                                                            <IconButton
+                                                                                aria-label="delete assignment"
+                                                                                size="small"
+                                                                                onClick={(e) => {
+                                                                                    e.stopPropagation(); // Prevent shift click
+                                                                                    setSelectedAssignment(assignmentData); // Set assignment to delete
+                                                                                    setDeleteConfirmationOpen(true); // Open confirmation dialog
+                                                                                }}
+                                                                                sx={{
+                                                                                    position: 'absolute',
+                                                                                    top: 1,
+                                                                                    right: 1,
+                                                                                    padding: '1px',
+                                                                                    color: 'rgba(255, 255, 255, 0.7)',
+                                                                                    backgroundColor: 'rgba(0, 0, 0, 0.1)',
+                                                                                    '&:hover': {
+                                                                                        color: '#fff',
+                                                                                        backgroundColor: 'rgba(0, 0, 0, 0.3)'
+                                                                                    },
+                                                                                    zIndex: 2,
+                                                                                }}
+                                                                            >
+                                                                                <CancelIcon fontSize="inherit" />
+                                                                            </IconButton>
+                                                                        )}
+                                                                    </Box>
+                                                                );
+                                                            })}
+                                                        </Box>
+                                                    </TableCell>
+                                                );
+                                            })}
+                                        </TableRow>
+                                    ))}
+                                </TableBody>
+                            </Table>
+                        </TableContainer>
+
+                        <Paper sx={{ mt: 2, p: 2, overflowX: 'auto' }}>
+                            <Typography variant="h6" sx={{ mb: 2 }}>
+                                本月班別統計
+                            </Typography>
+                            <TableContainer>
+                                <Table size="small" sx={{ minWidth: 1000 }}>
+                                    <TableHead>
+                                        <TableRow>
+                                            <TableCell>員工姓名</TableCell>
+                                            <TableCell align="center">總上班天數</TableCell>
+                                            <TableCell align="center">白班</TableCell>
+                                            <TableCell align="center">配器械班</TableCell>
+                                            <TableCell align="center">小夜班</TableCell>
+                                            <TableCell align="center">大夜班</TableCell>
+                                            <TableCell align="center">12-8班</TableCell>
+                                            <TableCell align="center">9-5班</TableCell>
+                                            <TableCell align="center">白班待命</TableCell>
+                                            <TableCell align="center">小夜待命</TableCell>
+                                            <TableCell align="center">大夜待命</TableCell>
+                                            <TableCell align="center">Off日待</TableCell>
+                                            <TableCell align="center">Off夜待</TableCell>
+                                            <TableCell align="center">休假</TableCell>
+                                            <TableCell align="center">例假</TableCell>
+                                        </TableRow>
+                                    </TableHead>
+                                    <TableBody>
+                                        {(() => {
+                                            const statistics = calculateShiftStatistics(assignments, employees);
+                                            return employees.map(employee => {
+                                                const stats = statistics[employee.id] || {};
+                                                return (
+                                                    <TableRow key={employee.id}>
+                                                        <TableCell>{employee.name}</TableCell>
+                                                        <TableCell align="center" sx={{ color: (stats['總上班天數'] || 0) < 11 ? 'error.main' : 'inherit' }}>
+                                                            {stats['總上班天數'] || 0}
+                                                        </TableCell>
+                                                        <TableCell align="center">{stats['白班'] || 0}</TableCell>
+                                                        <TableCell align="center">{stats['配器械班'] || 0}</TableCell>
+                                                        <TableCell align="center" sx={{ color: (stats['小夜班'] || 0) >= 15 ? 'orange' : 'inherit' }}>
+                                                            {stats['小夜班'] || 0}
+                                                        </TableCell>
+                                                        <TableCell align="center" sx={{ color: (stats['大夜班'] || 0) >= 15 ? 'orange' : 'inherit' }}>
+                                                            {stats['大夜班'] || 0}
+                                                        </TableCell>
+                                                        <TableCell align="center">{stats['12-8班'] || 0}</TableCell>
+                                                        <TableCell align="center">{stats['9-5班'] || 0}</TableCell>
+                                                        <TableCell align="center">{stats['白班待命'] || 0}</TableCell>
+                                                        <TableCell align="center">{stats['小夜待命'] || 0}</TableCell>
+                                                        <TableCell align="center">{stats['大夜待命'] || 0}</TableCell>
+                                                        <TableCell align="center">{stats['Off日待'] || 0}</TableCell>
+                                                        <TableCell align="center">{stats['Off夜待'] || 0}</TableCell>
+                                                        <TableCell align="center">{stats['休假'] || 0}</TableCell>
+                                                        <TableCell align="center">{stats['例假'] || 0}</TableCell>
+                                                    </TableRow>
+                                                );
+                                            });
+                                        })()}
+                                    </TableBody>
+                                </Table>
+                            </TableContainer>
+                        </Paper>
+
+                        {swapHistory.length > 0 && (
+                            <Paper sx={{ mt: 2, p: 2 }}>
+                                <Typography variant="h6" sx={{ mb: 2 }}>
+                                    換班歷史紀錄
+                                </Typography>
+                                <List dense sx={{ maxHeight: 200, overflowY: 'auto' }}>
+                                    {swapHistory.map((record, index) => (
+                                        <ListItem key={index} divider>
+                                            <ListItemText primary={record} />
+                                        </ListItem>
+                                    ))}
+                                </List>
+                            </Paper>
+                        )}
+                    </Box>
                 </Paper>
             </Box>
+
+            <Dialog open={selectNewShiftDialogOpen} onClose={handleSelectNewShiftCancel}>
+                <DialogTitle>選擇新班別</DialogTitle>
+                <DialogContent>
+                    {swapState.source && (
+                        <Typography sx={{ mb: 2 }}>
+                            您希望將 <strong>{employees.find(e => e.id === swapState.source?.employeeId)?.name}</strong> 在 <strong>{swapState.source?.date}</strong> 的班別
+                            (原: <strong>{swapState.source?.originalShiftName}</strong>) 更換成：
+                        </Typography>
+                    )}
+                    <FormControl fullWidth>
+                        <InputLabel id="select-new-shift-label">新班別</InputLabel>
+                        <Select
+                            labelId="select-new-shift-label"
+                            value={dialogSelectedShift}
+                            label="新班別"
+                            onChange={(e) => setDialogSelectedShift(e.target.value as string)}
+                        >
+                            {allShiftNames.map(shiftName => (
+                                <MenuItem key={shiftName} value={shiftName}>
+                                    {shiftName}
+                                </MenuItem>
+                            ))}
+                        </Select>
+                    </FormControl>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={handleSelectNewShiftCancel}>取消</Button>
+                    <Button onClick={handleSelectNewShiftConfirm} variant="contained" disabled={!dialogSelectedShift}>下一步：選擇目標</Button>
+                </DialogActions>
+            </Dialog>
+
+            <Dialog open={swapState.stage === 'confirmingSwap'} onClose={handleSwapCancel}>
+                <DialogTitle>確認換班？</DialogTitle>
+                <DialogContent>
+                    {swapState.source && swapState.target && newShiftForSource && (
+                        (() => {
+                            const sourceEmp = employees.find(e => e.id === swapState.source?.employeeId);
+                            const targetEmp = employees.find(e => e.id === swapState.target?.employeeId);
+                            if (!sourceEmp || !targetEmp) return null;
+                            return (
+                                <Typography>
+                                    確認將 <strong>{sourceEmp.name}</strong> 在 <strong>{swapState.source.date}</strong> 的班
+                                    (原: <strong>{swapState.source.originalShiftName}</strong> → 新: <strong>{newShiftForSource}</strong>)
+                                    <br />
+                                    與 <strong>{targetEmp.name}</strong> 在 <strong>{swapState.target.date}</strong> 的班
+                                    (原: <strong>{swapState.target.shiftName}</strong>)
+                                    交換嗎？
+                                    <br /><br />
+                                    <small>(交換後，<strong>{targetEmp.name}</strong> 在 <strong>{swapState.target.date}</strong> 會變成 <strong>{swapState.source.originalShiftName}</strong>)</small>
+                                </Typography>
+                            );
+                        })()
+                    )}
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={handleSwapCancel}>取消</Button>
+                    <Button onClick={handleExecuteSwap} color="primary" variant="contained">
+                        確認交換
+                    </Button>
+                </DialogActions>
+            </Dialog>
 
             <Dialog
                 open={selectedDate !== null}
@@ -1124,11 +1410,11 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
 
             <Snackbar
                 open={snackbarOpen}
-                autoHideDuration={4000}
+                autoHideDuration={6000}
                 onClose={handleCloseSnackbar}
                 anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
             >
-                <Alert onClose={handleCloseSnackbar} severity={snackbarSeverity} sx={{ width: '100%' }}>
+                <Alert onClose={handleCloseSnackbar} severity={snackbarSeverity} sx={{ width: '100%', whiteSpace: 'pre-line' }}>
                     {snackbarMessage}
                 </Alert>
             </Snackbar>
