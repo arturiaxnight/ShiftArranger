@@ -6,12 +6,18 @@ import {
     DialogActions,
     Button,
     TextField,
+    FormControl,
+    InputLabel,
+    Select,
+    MenuItem,
+    SelectChangeEvent
 } from '@mui/material';
 
 interface Employee {
     id: string;
     name: string;
     employeeId: string;
+    specialty: 'OPH' | 'CVS' | 'OPH+CVS' | '非專OPH' | '非專CVS' | '新人';
 }
 
 interface EmployeeFormDialogProps {
@@ -21,6 +27,15 @@ interface EmployeeFormDialogProps {
     onSubmit: (employee: Omit<Employee, 'id'>) => void;
 }
 
+const specialtyOptions: Employee['specialty'][] = [
+    'OPH',
+    'CVS',
+    'OPH+CVS',
+    '非專OPH',
+    '非專CVS',
+    '新人'
+];
+
 const EmployeeFormDialog: React.FC<EmployeeFormDialogProps> = ({
     open,
     employee,
@@ -28,8 +43,9 @@ const EmployeeFormDialog: React.FC<EmployeeFormDialogProps> = ({
     onSubmit,
 }) => {
     const [formData, setFormData] = React.useState<Omit<Employee, 'id'>>({
-        name: employee?.name || '',
-        employeeId: employee?.employeeId || '',
+        name: '',
+        employeeId: '',
+        specialty: '新人',
     });
 
     React.useEffect(() => {
@@ -37,25 +53,35 @@ const EmployeeFormDialog: React.FC<EmployeeFormDialogProps> = ({
             setFormData({
                 name: employee.name,
                 employeeId: employee.employeeId,
+                specialty: employee.specialty,
             });
         } else {
             setFormData({
                 name: '',
                 employeeId: '',
+                specialty: '新人',
             });
         }
-    }, [employee]);
+    }, [employee, open]);
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
         onSubmit(formData);
     };
 
-    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
         const { name, value } = e.target;
         setFormData((prev) => ({
             ...prev,
             [name]: value,
+        }));
+    };
+
+    const handleSpecialtyChange = (event: SelectChangeEvent) => {
+        const value = event.target.value as Employee['specialty'];
+        setFormData((prev) => ({
+            ...prev,
+            specialty: value,
         }));
     };
 
@@ -85,6 +111,22 @@ const EmployeeFormDialog: React.FC<EmployeeFormDialogProps> = ({
                         onChange={handleChange}
                         required
                     />
+                    <FormControl fullWidth margin="dense" required>
+                        <InputLabel id="specialty-select-label">專科</InputLabel>
+                        <Select
+                            labelId="specialty-select-label"
+                            name="specialty"
+                            value={formData.specialty}
+                            label="專科"
+                            onChange={handleSpecialtyChange}
+                        >
+                            {specialtyOptions.map((option) => (
+                                <MenuItem key={option} value={option}>
+                                    {option}
+                                </MenuItem>
+                            ))}
+                        </Select>
+                    </FormControl>
                 </DialogContent>
                 <DialogActions>
                     <Button onClick={onClose}>取消</Button>

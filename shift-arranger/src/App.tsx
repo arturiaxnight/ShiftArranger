@@ -12,19 +12,20 @@ interface Employee {
   id: string;
   name: string;
   employeeId: string;
+  specialty: 'OPH' | 'CVS' | 'OPH+CVS' | '非專OPH' | '非專CVS' | '新人';
 }
 
 const App: React.FC = () => {
   // 在 App 元件中管理員工列表狀態
   const [employees, setEmployees] = useState<Employee[]>([
     // 初始測試資料，未來可以從 API 獲取
-    { id: '1', name: '張小明', employeeId: 'EMP001' },
-    { id: '2', name: '李小華', employeeId: 'EMP002' },
-    { id: '3', name: '王小美', employeeId: 'EMP003' },
-    { id: '4', name: '陳小強', employeeId: 'EMP004' },
-    { id: '5', name: '林小芳', employeeId: 'EMP005' },
-    { id: '6', name: '吳大偉', employeeId: 'EMP006' }, // 新增更多員工
-    { id: '7', name: '趙小麗', employeeId: 'EMP007' },
+    { id: '1', name: '張小明', employeeId: 'EMP001', specialty: '非專OPH' },
+    { id: '2', name: '李小華', employeeId: 'EMP002', specialty: 'OPH' },
+    { id: '3', name: '王小美', employeeId: 'EMP003', specialty: '非專CVS' },
+    { id: '4', name: '陳小強', employeeId: 'EMP004', specialty: 'CVS' },
+    { id: '5', name: '林小芳', employeeId: 'EMP005', specialty: 'OPH+CVS' },
+    { id: '6', name: '吳大偉', employeeId: 'EMP006', specialty: '新人' },
+    { id: '7', name: '趙小麗', employeeId: 'EMP007', specialty: '新人' },
   ]);
 
   return (

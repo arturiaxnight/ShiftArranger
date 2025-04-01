@@ -17,6 +17,7 @@ interface Employee {
     id: string;
     name: string;
     employeeId: string;
+    specialty: 'OPH' | 'CVS' | 'OPH+CVS' | '非專OPH' | '非專CVS' | '新人';
 }
 
 interface Shift {
@@ -238,74 +239,77 @@ const ShiftAssignmentForm: React.FC<ShiftAssignmentFormProps> = ({
     const [selectedEmployee, setSelectedEmployee] = useState<string>('');
     const [selectedShift, setSelectedShift] = useState<string>('');
     const [error, setError] = useState<string | null>(null);
+    const [shiftIntervalError, setShiftIntervalError] = useState<string | null>(null);
 
     const isEmployeeAssigned = (employeeId: string) => {
         return existingAssignments.some(a => a.employeeId === employeeId && a.date === date);
     };
 
-    const isShiftDisabled = (shift: Shift): boolean => {
-        if (!selectedEmployee) return false;
-        const { isValid } = checkTimeInterval(date, selectedEmployee, shift, existingAssignments, shiftDetailsMap);
-        return !isValid;
+    const getShiftIntervalValidation = (shiftId: string): { isValid: boolean; message: string | null } => {
+        if (!selectedEmployee) return { isValid: true, message: null };
+        const shift = shifts.find(s => s.id === shiftId);
+        if (!shift) return { isValid: true, message: null };
+        return checkTimeInterval(date, selectedEmployee, shift, existingAssignments, shiftDetailsMap);
     };
 
     const handleEmployeeChange = (event: SelectChangeEvent) => {
-        setSelectedEmployee(event.target.value);
+        const newEmployeeId = event.target.value as string;
+        setSelectedEmployee(newEmployeeId);
         setSelectedShift('');
+        setShiftIntervalError(null);
         setError(null);
     };
 
     const handleShiftChange = (event: SelectChangeEvent) => {
-        const shiftId = event.target.value;
-        const selectedShiftData = shifts.find(s => s.id === shiftId);
+        const newShiftId = event.target.value as string;
+        setSelectedShift(newShiftId);
+        setShiftIntervalError(null);
+        setError(null);
 
-        if (selectedShiftData && selectedEmployee) {
-            const timeIntervalCheck = checkTimeInterval(
-                date,
-                selectedEmployee,
-                selectedShiftData,
-                existingAssignments,
-                shiftDetailsMap
-            );
-
-            if (!timeIntervalCheck.isValid) {
-                setError(timeIntervalCheck.message);
-                setSelectedShift('');
-                return;
+        if (selectedEmployee && newShiftId) {
+            const shift = shifts.find(s => s.id === newShiftId);
+            if (shift) {
+                const intervalCheck = checkTimeInterval(date, selectedEmployee, shift, existingAssignments, shiftDetailsMap);
+                if (!intervalCheck.isValid) {
+                    setShiftIntervalError(intervalCheck.message);
+                } else {
+                    setShiftIntervalError(null);
+                }
             }
-
-            const restDayCheck = checkRestDayRules(
-                date,
-                selectedEmployee,
-                existingAssignments,
-                shiftId,
-                shiftDetailsMap
-            );
-            if (!restDayCheck.isValid) {
-                setError(restDayCheck.message);
-                setSelectedShift('');
-                return;
-            }
-
-            setError(null);
-            setSelectedShift(shiftId);
         }
     };
 
     const handleConfirm = () => {
-        if (selectedEmployee && selectedShift) {
-            const shiftName = shifts.find(s => s.id === selectedShift)?.name;
-            if (shiftName) {
-                onAssign(selectedEmployee, shiftName);
-            }
+        if (!selectedEmployee || !selectedShift) {
+            setError('請選擇員工和班別');
+            return;
         }
+        if (shiftIntervalError) {
+            setError('無法指派，違反班別間隔規則');
+            return;
+        }
+
+        const shift = shifts.find(s => s.id === selectedShift);
+        if (!shift) return;
+
+        onAssign(selectedEmployee, shift.name);
+        setError(null);
+        setShiftIntervalError(null);
     };
 
+    const availableEmployees = employees.filter(emp => !isEmployeeAssigned(emp.id));
+
     return (
-        <Box component="form" noValidate autoComplete="off" sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
-            <Typography variant="subtitle1" gutterBottom>
+        <Box sx={{ p: 2, minWidth: 350 }}>
+            <Typography variant="h6" gutterBottom>
                 選擇員工和班別
             </Typography>
+
+            {shiftIntervalError && (
+                <Alert severity="warning" sx={{ mb: 2 }}>
+                    {shiftIntervalError}
+                </Alert>
+            )}
 
             {error && (
                 <Alert severity="error" sx={{ mb: 2 }}>
@@ -313,56 +317,63 @@ const ShiftAssignmentForm: React.FC<ShiftAssignmentFormProps> = ({
                 </Alert>
             )}
 
-            <FormControl fullWidth>
+            <FormControl fullWidth margin="normal">
                 <InputLabel id="employee-select-label">員工</InputLabel>
                 <Select
                     labelId="employee-select-label"
                     value={selectedEmployee}
                     label="員工"
                     onChange={handleEmployeeChange}
+                    disabled={availableEmployees.length === 0}
                 >
-                    {employees.map((employee) => (
-                        <MenuItem
-                            key={employee.id}
-                            value={employee.id}
-                            disabled={isEmployeeAssigned(employee.id)}
-                        >
-                            {employee.name} {isEmployeeAssigned(employee.id) ? '(本日已有排班)' : ''}
-                        </MenuItem>
-                    ))}
+                    {availableEmployees.length > 0 ? (
+                        availableEmployees.map(emp => (
+                            <MenuItem key={emp.id} value={emp.id}>
+                                {emp.name}
+                            </MenuItem>
+                        ))
+                    ) : (
+                        <MenuItem disabled>本日無可用員工</MenuItem>
+                    )}
                 </Select>
             </FormControl>
 
-            <FormControl fullWidth disabled={!selectedEmployee}>
+            <FormControl fullWidth margin="normal" error={!!shiftIntervalError}>
                 <InputLabel id="shift-select-label">班別</InputLabel>
                 <Select
                     labelId="shift-select-label"
                     value={selectedShift}
                     label="班別"
                     onChange={handleShiftChange}
-                    error={!!error}
+                    disabled={!selectedEmployee}
                 >
-                    {shifts.map((shift) => (
-                        <MenuItem
-                            key={shift.id}
-                            value={shift.id}
-                            disabled={isShiftDisabled(shift)}
-                        >
-                            {shift.name}
-                        </MenuItem>
-                    ))}
+                    {shifts.map(shift => {
+                        const intervalValidation = getShiftIntervalValidation(shift.id);
+                        const isDisabledByInterval = !intervalValidation.isValid;
+
+                        return (
+                            <MenuItem
+                                key={shift.id}
+                                value={shift.id}
+                                disabled={isDisabledByInterval}
+                            >
+                                {shift.name}
+                                {isDisabledByInterval && <Typography variant="caption" color="error" sx={{ ml: 1 }}>({intervalValidation.message})</Typography>}
+                            </MenuItem>
+                        );
+                    })}
                 </Select>
-                {error && <Alert severity="warning" sx={{ mt: 1 }}>{error}</Alert>}
             </FormControl>
 
-            <Button
-                variant="contained"
-                onClick={handleConfirm}
-                disabled={!selectedEmployee || !selectedShift || !!error}
-                sx={{ mt: 2 }}
-            >
-                確認排班
-            </Button>
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 3 }}>
+                <Button
+                    variant="contained"
+                    onClick={handleConfirm}
+                    disabled={!selectedEmployee || !selectedShift || !!shiftIntervalError}
+                >
+                    確認排班
+                </Button>
+            </Box>
         </Box>
     );
 };

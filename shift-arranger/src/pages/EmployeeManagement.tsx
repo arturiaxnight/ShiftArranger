@@ -26,6 +26,7 @@ interface Employee {
     id: string;
     name: string;
     employeeId: string;
+    specialty: 'OPH' | 'CVS' | 'OPH+CVS' | '非專OPH' | '非專CVS' | '新人';
     // position: string; // 移除職位
 }
 
@@ -130,6 +131,7 @@ const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ employees, setE
                         <TableRow>
                             <TableCell>員工編號</TableCell>
                             <TableCell>姓名</TableCell>
+                            <TableCell>專科</TableCell>
                             <TableCell align="right">操作</TableCell>
                         </TableRow>
                     </TableHead>
@@ -138,6 +140,7 @@ const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ employees, setE
                             <TableRow key={employee.id}>
                                 <TableCell>{employee.employeeId}</TableCell>
                                 <TableCell>{employee.name}</TableCell>
+                                <TableCell>{employee.specialty}</TableCell>
                                 <TableCell align="right">
                                     <IconButton
                                         color="primary"

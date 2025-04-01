@@ -25,7 +25,14 @@ import {
     Divider,
     Alert,
     ListItemIcon,
-    Snackbar
+    Snackbar,
+    Select,
+    MenuItem,
+    FormControl,
+    InputLabel,
+    RadioGroup,
+    FormControlLabel,
+    Radio
 } from '@mui/material';
 import {
     ChevronLeft as ChevronLeftIcon,
@@ -34,7 +41,9 @@ import {
     Close as CloseIcon,
     Menu as MenuIcon,
     ErrorOutline as ErrorOutlineIcon,
-    CheckCircleOutline as CheckCircleOutlineIcon
+    CheckCircleOutline as CheckCircleOutlineIcon,
+    AddCircleOutline as AddCircleOutlineIcon,
+    Cancel as CancelIcon
 } from '@mui/icons-material';
 import ShiftAssignmentForm from '../components/ShiftAssignmentForm';
 import { useDrawer } from '../contexts/DrawerContext';
@@ -43,12 +52,14 @@ import { getDaysInMonth as getDaysInMonthFromDateFns, parse, differenceInHours, 
 interface CalendarDay {
     day: number;
     isCurrentMonth: boolean;
+    isToday?: boolean;
 }
 
 interface Employee {
     id: string;
     name: string;
     employeeId: string;
+    specialty: 'OPH' | 'CVS' | 'OPH+CVS' | '非專OPH' | '非專CVS' | '新人';
 }
 
 interface ShiftAssignment {
@@ -231,6 +242,31 @@ const validateScheduleRules = (assignments: ShiftAssignment[], employees: Employ
     return Array.from(new Set(errors));
 };
 
+// Helper function to check potential swap conflicts
+const checkSwapConflict = (source: ShiftAssignment, target: ShiftAssignment, assignments: ShiftAssignment[], employees: Employee[]): string | null => {
+    // Check if target employee already has a shift on the source date
+    const targetConflict = assignments.find(a =>
+        a.employeeId === target.employeeId &&
+        a.date === source.date &&
+        a.employeeId !== source.employeeId // Exclude the source itself
+    );
+    if (targetConflict) {
+        return `換班失敗：${employees.find(e => e.id === target.employeeId)?.name} 在 ${source.date} 已有班 (${targetConflict.shiftName})。`;
+    }
+
+    // Check if source employee already has a shift on the target date
+    const sourceConflict = assignments.find(a =>
+        a.employeeId === source.employeeId &&
+        a.date === target.date &&
+        a.employeeId !== target.employeeId // Exclude the target itself
+    );
+    if (sourceConflict) {
+        return `換班失敗：${employees.find(e => e.id === source.employeeId)?.name} 在 ${target.date} 已有班 (${sourceConflict.shiftName})。`;
+    }
+
+    return null; // No conflict
+};
+
 // 工具函數：取得指定日期是星期幾（0-6）
 const getWeekDay = (year: number, month: number, day: number) => {
     return new Date(year, month, day).getDay();
@@ -284,25 +320,33 @@ const generateCalendarData = (year: number, month: number) => {
     return weeks;
 };
 
-// --- 更新 generateTestSchedule ---
+// --- Refactored generateTestSchedule (Improved Rule Adherence) ---
 const generateTestSchedule = (year: number, month: number, employees: Employee[]): ShiftAssignment[] => {
-    console.log(`[generateTestSchedule] Generating for ${year}-${month + 1} with ${employees.length} employees.`); // Log: Start
+    console.log(`[generateTestSchedule] Generating for ${year}-${month + 1} with ${employees.length} employees.`);
 
     const assignments: ShiftAssignment[] = [];
     const daysInMonth = getDaysInMonthFromDateFns(new Date(year, month));
     const allShiftNames = Array.from(shiftDetailsMap.keys());
     const workShiftNames = allShiftNames.filter(name => shiftDetailsMap.get(name)?.isWorkShift);
-    const offShiftNames = ['休假', '例假']; // Define off shifts specifically
+    const offShiftNames = ['休假', '例假'];
+    const standbyShiftNames = allShiftNames.filter(name => {
+        const details = shiftDetailsMap.get(name);
+        return details && !details.isWorkShift && !details.isOffShift;
+    });
 
-    // 輔助函數：檢查是否滿足12小時間隔 (保留之前的定義)
-    const checkIntervalRule = (prevAssignment: ShiftAssignment | null, currentShiftName: string, currentDateStr: string): boolean => {
+    // --- Helper functions (checkIntervalRule, check7DayRestRule) remain inside --- 
+    const checkIntervalRule = (prevAssignmentDateStr: string | null, currentShiftName: string, currentDateStr: string, employeeId: string): boolean => {
+        if (!prevAssignmentDateStr) return true;
+        // Find previous assignment from the MAIN assignments array
+        const prevAssignment = assignments.find(a => a.employeeId === employeeId && a.date === prevAssignmentDateStr);
         if (!prevAssignment) return true;
+
         const prevShiftDetails = shiftDetailsMap.get(prevAssignment.shiftName);
         const currentShiftDetails = shiftDetailsMap.get(currentShiftName);
         if (!prevShiftDetails?.isWorkShift || !currentShiftDetails?.isWorkShift) return true;
         const prevEndTimeStr = prevShiftDetails.endTime;
         const currentStartTimeStr = currentShiftDetails.startTime;
-        if (!prevEndTimeStr || !currentStartTimeStr) return true;
+        if (!prevEndTimeStr || !currentStartTimeStr) return false;
         let prevEndDateTime = getShiftDateTime(prevAssignment.date, prevEndTimeStr);
         let currentStartDateTime = getShiftDateTime(currentDateStr, currentStartTimeStr);
         if (!prevEndDateTime || !currentStartDateTime) return false;
@@ -313,12 +357,12 @@ const generateTestSchedule = (year: number, month: number, employees: Employee[]
         return intervalHours >= 12;
     };
 
-    // 輔助函數：檢查7休2規則 (休假和例假) (保留之前的定義)
     const check7DayRestRule = (employeeId: string, currentDateStr: string): { needsRest: boolean, needsMandatory: boolean } => {
         const currentCheckDate = parse(currentDateStr, 'yyyy-MM-dd', new Date());
         const startDate = subDays(currentCheckDate, 6);
         let hasRestDay = false;
         let hasMandatoryOff = false;
+        // Access the MAIN assignments array
         const employeeAssignments = assignments.filter(a => a.employeeId === employeeId);
         for (let i = 0; i <= 6; i++) {
             const checkDate = subDays(currentCheckDate, i);
@@ -332,85 +376,151 @@ const generateTestSchedule = (year: number, month: number, employees: Employee[]
         }
         return { needsRest: !hasRestDay, needsMandatory: !hasMandatoryOff };
     };
+    // --- End Helper Functions ---
 
-    // 逐員工、逐天生成班別
-    employees.forEach(employee => {
-        let consecutiveWorkDays = 0; // 為每個員工追蹤連續工作天數
-
-        for (let day = 1; day <= daysInMonth; day++) {
-            const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-            // 獲取該員工前一天的排班
-            const prevAssignment = assignments
-                .slice()
-                .reverse()
-                .find(a => a.employeeId === employee.id);
-
-            const { needsRest, needsMandatory } = check7DayRestRule(employee.id, dateStr);
-
-            let chosenShift: string;
-
-            // 1. 優先處理必須的休息日 (僅在有足夠歷史數據時強制執行)
-            if (day >= 7 && needsMandatory) {
-                chosenShift = '例假';
-            } else if (day >= 7 && needsRest) {
-                chosenShift = '休假';
-            } else {
-                // --- 包班目標設定 ---
-                let targetShift: string | null = null;
-                if (employees.length > 0 && employee.id === employees[0].id) { // 第一位員工目標：大夜班
-                    targetShift = '大夜班';
-                } else if (employees.length > 1 && employee.id === employees[1].id) { // 第二位員工目標：小夜班
-                    targetShift = '小夜班';
-                }
-
-                // 檢查目標班別是否可行 (符合間隔規則)
-                const isTargetShiftValid = targetShift && checkIntervalRule(prevAssignment ?? null, targetShift, dateStr);
-
-                if (isTargetShiftValid) {
-                    // 如果目標班別可行，直接選用
-                    chosenShift = targetShift!;
-                } else {
-                    // --- 如果目標班別不可行，或非目標員工，則執行原隨機邏輯 ---
-                    // 2. 找出符合間隔規則的可用工作班別
-                    const validWorkShifts = workShiftNames.filter(shiftName =>
-                        checkIntervalRule(prevAssignment ?? null, shiftName, dateStr)
-                    );
-
-                    // 3. 建立所有可能的班別選項（包括休息日）
-                    let possibleShifts: string[] = [];
-                    if (validWorkShifts.length > 0) {
-                        possibleShifts.push(...validWorkShifts);
-                    }
-                    possibleShifts.push(...offShiftNames);
-
-                    // 4. 決定班別：考慮連續工作天數傾向
-                    if (consecutiveWorkDays >= 5 && possibleShifts.some(s => offShiftNames.includes(s))) {
-                        const availableOffDays = possibleShifts.filter(s => offShiftNames.includes(s));
-                        chosenShift = availableOffDays[Math.floor(Math.random() * availableOffDays.length)];
-                    } else if (possibleShifts.length > 0) {
-                        chosenShift = possibleShifts[Math.floor(Math.random() * possibleShifts.length)];
-                    } else {
-                        console.warn(`[generateTestSchedule] Could not find ANY valid shift for ${employee.name} on ${dateStr}. Assigning '休假' as fallback.`);
-                        chosenShift = '休假';
-                    }
-                    // --- 原隨機邏輯結束 ---
-                }
-            }
-
-            // 記錄選擇的班別
-            assignments.push({ employeeId: employee.id, date: dateStr, shiftName: chosenShift });
-
-            // 更新連續工作天數計數器
-            if (shiftDetailsMap.get(chosenShift)?.isWorkShift) {
-                consecutiveWorkDays++;
-            } else {
-                consecutiveWorkDays = 0; // 休息日重置計數器
-            }
-        }
-        // employee loop ends, consecutiveWorkDays resets implicitly for next employee
+    const employeeTrackers: { [empId: string]: { consecutiveWorkDays: number, targetShiftCount: number, currentWorkDays: number, prevAssignmentDate: string | null } } = {};
+    employees.forEach(emp => {
+        employeeTrackers[emp.id] = { consecutiveWorkDays: 0, targetShiftCount: 0, currentWorkDays: 0, prevAssignmentDate: null };
     });
 
-    console.log(`[generateTestSchedule] Finished generation with rules & bias. Total assignments: ${assignments.length}`); // Log: Finish
+    for (let day = 1; day <= daysInMonth; day++) {
+        const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        let dailyOffCount = 0; // Tracks non-mandatory off days assigned today
+        const maxDailyOff = Math.ceil(employees.length / 3);
+        const shuffledEmployees = [...employees].sort(() => Math.random() - 0.5);
+
+        // --- Pass 1: Assign mandatory rests first --- 
+        const mandatoryAssignmentsToday: { [empId: string]: string } = {};
+        shuffledEmployees.forEach(employee => {
+            const empId = employee.id;
+            const tracker = employeeTrackers[empId];
+            const { needsRest, needsMandatory } = check7DayRestRule(empId, dateStr);
+
+            if (day >= 7 && needsMandatory) {
+                mandatoryAssignmentsToday[empId] = '例假';
+                console.log(`[Rule Pre-Assign] ${employee.name} assigned mandatory rest '例假' on ${dateStr}`);
+            } else if ((day >= 7 && needsRest) || tracker.consecutiveWorkDays >= 6) {
+                // If 例假 wasn't already assigned as mandatory, assign 休假
+                if (!mandatoryAssignmentsToday[empId]) {
+                    mandatoryAssignmentsToday[empId] = '休假';
+                    console.log(`[Rule Pre-Assign] ${employee.name} assigned rest '休假' (needsRest=${needsRest}, consecutive=${tracker.consecutiveWorkDays}) on ${dateStr}`);
+                }
+            }
+        });
+
+        // --- Pass 2: Assign remaining shifts --- 
+        shuffledEmployees.forEach(employee => {
+            const empId = employee.id;
+            let tracker = employeeTrackers[empId];
+            const prevAssignmentDateStr = tracker.prevAssignmentDate;
+            let chosenShift: string | null = mandatoryAssignmentsToday[empId] ?? null; // Get pre-assigned mandatory shift if any
+            let isMandatoryChoice = !!chosenShift;
+
+            // If no mandatory shift was assigned, determine the shift
+            if (!chosenShift) {
+                let targetShift: string | null = null;
+                const originalIndex = employees.findIndex(e => e.id === empId);
+                if (originalIndex === 0 && employees.length > 0) { targetShift = '大夜班'; }
+                else if (originalIndex === 1 && employees.length > 1) { targetShift = '小夜班'; }
+
+                const isTargetShiftValid = targetShift && checkIntervalRule(prevAssignmentDateStr, targetShift, dateStr, empId);
+
+                if (isTargetShiftValid && tracker.targetShiftCount < 16) {
+                    chosenShift = targetShift!;
+                    // console.log(`[Target] ${employee.name} assigned target ${chosenShift} on ${dateStr}`);
+                } else {
+                    // Weighted Random Selection
+                    const validWorkShifts = workShiftNames.filter(shiftName => checkIntervalRule(prevAssignmentDateStr, shiftName, dateStr, empId));
+                    let possibleShifts: string[] = [];
+                    const allowOff = dailyOffCount < maxDailyOff; // Check if non-mandatory off is allowed
+
+                    if (tracker.currentWorkDays < 11) {
+                        if (validWorkShifts.length > 0) possibleShifts.push(...validWorkShifts, ...validWorkShifts);
+                        possibleShifts.push(...standbyShiftNames);
+                        if (allowOff) possibleShifts.push('休假'); // Only add 休假 if limit allows (例假 handled above)
+                    } else {
+                        if (validWorkShifts.length > 0) possibleShifts.push(...validWorkShifts);
+                        possibleShifts.push(...standbyShiftNames, ...standbyShiftNames);
+                        if (allowOff) possibleShifts.push('休假', '休假', '休假'); // Add 休假 if limit allows
+                    }
+
+                    if (possibleShifts.length === 0) {
+                        // Fallback pool if primary pool is empty (e.g., limit reached, no valid work)
+                        possibleShifts = [
+                            ...validWorkShifts,
+                            ...standbyShiftNames,
+                            // Include 休假 as fallback ONLY if limit allows?
+                            ...(allowOff ? ['休假'] : [])
+                        ];
+                    }
+                    // Critical fallback: if still no options, assign 休假 regardless of limit (better than nothing?)
+                    if (possibleShifts.length === 0) {
+                        console.error(`[Critical] No possible shifts found for ${employee.name} on ${dateStr}. Assigning 休假.`);
+                        chosenShift = '休假';
+                    } else {
+                        chosenShift = possibleShifts[Math.floor(Math.random() * possibleShifts.length)];
+                        // console.log(`[Random] ${employee.name} assigned random ${chosenShift} on ${dateStr}`);
+                    }
+                }
+            }
+
+            // --- Post-Assignment Checks and Finalization --- 
+            const chosenShiftDetails = shiftDetailsMap.get(chosenShift!);
+            const isChosenOff = chosenShiftDetails?.isOffShift ?? false;
+            const isChosenMandatoryOff = chosenShiftDetails?.isMandatoryOff ?? false;
+
+            // Check and increment daily off count ONLY for NON-mandatory off days
+            if (isChosenOff && !isChosenMandatoryOff) {
+                if (dailyOffCount >= maxDailyOff) {
+                    // Limit reached for a NON-MANDATORY off day. Try to find an alternative.
+                    console.log(`[Off Limit] Daily off limit (${maxDailyOff}) reached for ${dateStr}. ${employee.name} initially chose ${chosenShift}. Finding alternative...`);
+                    const nonOffOptions = [
+                        ...workShiftNames.filter(s => checkIntervalRule(prevAssignmentDateStr, s, dateStr, empId)),
+                        ...standbyShiftNames
+                    ];
+                    if (nonOffOptions.length > 0) {
+                        chosenShift = nonOffOptions[Math.floor(Math.random() * nonOffOptions.length)];
+                        console.log(`[Off Limit Override] ${employee.name} assigned ${chosenShift} instead.`);
+                        // isChosenOff would now be false, no need to increment count
+                    } else {
+                        console.warn(`[Off Limit Stick] Could not find alternative shift for ${employee.name} on ${dateStr}. Sticking with ${chosenShift}.`);
+                        // Stick with the off day, INCREMENT count even if over limit
+                        dailyOffCount++;
+                    }
+                } else {
+                    // Limit not reached, assign the non-mandatory off day and increment count
+                    dailyOffCount++;
+                }
+            }
+            // Note: Mandatory '例假' assignments do not affect/check the dailyOffCount limit here.
+
+            // --- Final Assignment and Tracker Update --- 
+            assignments.push({ employeeId: empId, date: dateStr, shiftName: chosenShift! });
+            tracker.prevAssignmentDate = dateStr;
+
+            const originalIndex = employees.findIndex(e => e.id === empId);
+            if ((originalIndex === 0 && chosenShift === '大夜班') || (originalIndex === 1 && chosenShift === '小夜班')) {
+                tracker.targetShiftCount++;
+            }
+
+            // Update consecutive days based on the FINAL chosen shift
+            const finalChosenShiftDetails = shiftDetailsMap.get(chosenShift!);
+            if (finalChosenShiftDetails?.isWorkShift) {
+                tracker.consecutiveWorkDays++;
+                tracker.currentWorkDays++;
+            } else {
+                tracker.consecutiveWorkDays = 0;
+            }
+            employeeTrackers[empId] = tracker;
+        });
+    }
+
+    console.log(`[generateTestSchedule] Finished generation. Total assignments: ${assignments.length}`);
+    // Final validation check (optional, for debugging)
+    const finalErrors = validateScheduleRules(assignments, employees, year, month);
+    if (finalErrors.length > 0) {
+        console.warn("[generateTestSchedule] Generated schedule has validation errors:", finalErrors);
+    }
     return assignments;
 };
 
@@ -491,6 +601,7 @@ const calculateShiftStatistics = (assignments: ShiftAssignment[], employees: Emp
     // 初始化統計物件
     employees.forEach(emp => {
         statistics[emp.id] = { // Use emp.id consistently
+            '總上班天數': 0, // ADDED: Initialize total work days
             '白班': 0,
             '配器械班': 0,
             '小夜班': 0,
@@ -512,8 +623,13 @@ const calculateShiftStatistics = (assignments: ShiftAssignment[], employees: Emp
         // 確保用 employee.id 來查找
         const employee = employees.find(e => e.id === assignment.employeeId);
         if (employee && statistics[employee.id]) {
-            if (statistics[employee.id][assignment.shiftName] !== undefined) {
+            const shiftDetails = shiftDetailsMap.get(assignment.shiftName);
+            if (shiftDetails && statistics[employee.id][assignment.shiftName] !== undefined) {
                 statistics[employee.id][assignment.shiftName]++;
+                // Increment total work days if it's a work shift
+                if (shiftDetails.isWorkShift) {
+                    statistics[employee.id]['總上班天數']++;
+                }
             } else {
                 // Optionally log or handle unexpected shift names
                 console.warn(`Unknown shift name found during statistics: ${assignment.shiftName}`);
@@ -524,8 +640,52 @@ const calculateShiftStatistics = (assignments: ShiftAssignment[], employees: Emp
     return statistics;
 };
 
-const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解構 employees
+// --- Helper Function to Check Swap Validity ---
+const checkSwapValidity = (
+    sourceInfo: { employeeId: string, date: string, originalShiftName: string },
+    newSourceShift: string,
+    targetAssignment: ShiftAssignment,
+    allAssignments: ShiftAssignment[],
+    employees: Employee[],
+    year: number,
+    month: number
+): boolean => {
+    const sourceEmpId = sourceInfo.employeeId;
+    const sourceDate = sourceInfo.date;
+    const originalSourceShift = sourceInfo.originalShiftName;
+    const targetEmpId = targetAssignment.employeeId;
+    const targetDate = targetAssignment.date;
+    const originalTargetShift = targetAssignment.shiftName;
+
+    // Rule 1: Cannot swap with self (already handled by disabling source employee's other shifts)
+    if (sourceEmpId === targetEmpId) return false;
+
+    // Rule 2: Simulate the swap
+    const simulatedAssignments = allAssignments.map(a => {
+        // Source employee gets the NEW selected shift on source date
+        if (a.employeeId === sourceEmpId && a.date === sourceDate) {
+            return { ...a, shiftName: newSourceShift };
+        }
+        // Target employee gets the ORIGINAL source shift on target date
+        if (a.employeeId === targetEmpId && a.date === targetDate) {
+            return { ...a, shiftName: originalSourceShift };
+        }
+        return a;
+    });
+
+    // Rule 3: Validate rules for the two involved employees
+    const sourceEmployee = employees.find(e => e.id === sourceEmpId);
+    const targetEmployee = employees.find(e => e.id === targetEmpId);
+    if (!sourceEmployee || !targetEmployee) return false;
+
+    const validationResults = validateScheduleRules(simulatedAssignments, [sourceEmployee, targetEmployee], year, month);
+
+    return validationResults.length === 0; // Return true if NO errors
+};
+
+const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProps }) => {
     const { drawerOpen } = useDrawer();
+    const [employees, setEmployees] = useState<Employee[]>(initialEmployeesFromProps);
     const [currentDate, setCurrentDate] = useState<Date>(new Date());
     const [selectedDate, setSelectedDate] = useState<string | null>(null);
     const [assignments, setAssignments] = useState<ShiftAssignment[]>([]);
@@ -533,37 +693,51 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [assignmentToDelete, setAssignmentToDelete] = useState<ShiftAssignment | null>(null);
     const [selectedEmployees, setSelectedEmployees] = useState<string[]>([]);
-    const [validationErrors, setValidationErrors] = useState<string[]>([]); // State for validation errors
-    const [showSuccessSnackbar, setShowSuccessSnackbar] = useState(false); // State for success message
-    const [showValidationErrorDialog, setShowValidationErrorDialog] = useState(false); // State for error dialog
+    const [validationErrors, setValidationErrors] = useState<string[]>([]);
+    const [showSuccessSnackbar, setShowSuccessSnackbar] = useState(false);
+    const [showValidationErrorDialog, setShowValidationErrorDialog] = useState(false);
+    const [isEditMode, setIsEditMode] = useState(false);
+    const [swapStep, setSwapStep] = useState<'none' | 'selectNewShift' | 'selectTargetShift'>('none');
+    const [swapSourceInfo, setSwapSourceInfo] = useState<{ employeeId: string, date: string, originalShiftName: string } | null>(null);
+    const [swapSelectedNewShift, setSwapSelectedNewShift] = useState<string | null>(null);
+    const [selectNewShiftDialogOpen, setSelectNewShiftDialogOpen] = useState(false);
+    const [swapTargetInfo, setSwapTargetInfo] = useState<{ employeeId: string, date: string, originalShiftName: string } | null>(null);
+    const [swapConfirmDialogOpen, setSwapConfirmDialogOpen] = useState(false);
+    const [swapHistory, setSwapHistory] = useState<{
+        timestamp: string;
+        sourceEmployeeName: string;
+        sourceDate: string;
+        sourceOriginalShift: string;
+        sourceNewShift: string;
+        targetEmployeeName: string;
+        targetDate: string;
+        targetOriginalShift: string;
+        targetNewShift: string;
+    }[]>([]);
+    const [swapErrorSnackbarOpen, setSwapErrorSnackbarOpen] = useState(false);
+    const [swapErrorMessage, setSwapErrorMessage] = useState('');
 
-    // 當 employees prop 改變時，更新 selectedEmployees
     useEffect(() => {
         setSelectedEmployees(employees.map(emp => emp.id));
     }, [employees]);
 
-    // 載入排班資料
     useEffect(() => {
-        // TODO: 從後端 API 載入當月排班資料
         setAssignments([]);
     }, [currentDate.getFullYear(), currentDate.getMonth()]);
 
-    // 處理點擊日期格子
     const handleDateClick = (year: number, month: number, day: number, isCurrentMonth: boolean) => {
         let targetYear = year;
         let targetMonth = month;
 
         if (!isCurrentMonth) {
-            // 如果點擊的是上個月的日期
-            if (day > 20) {  // 假設是上個月的日期
+            if (day > 20) {
                 targetMonth = month - 1;
                 if (targetMonth < 0) {
                     targetMonth = 11;
                     targetYear = year - 1;
                 }
             }
-            // 如果點擊的是下個月的日期
-            else {  // 假設是下個月的日期
+            else {
                 targetMonth = month + 1;
                 if (targetMonth > 11) {
                     targetMonth = 0;
@@ -572,16 +746,13 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
             }
         }
 
-        // 使用字串格式化而不是 toISOString()
         const dateString = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
         setSelectedDate(dateString);
         setOpenDialog(true);
     };
 
-    // 月曆資料
     const calendarData = generateCalendarData(currentDate.getFullYear(), currentDate.getMonth());
 
-    // 處理月份變更
     const handleMonthChange = (delta: number) => {
         setCurrentDate(prev => {
             const newMonth = prev.getMonth() + delta;
@@ -595,19 +766,15 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
         });
     };
 
-    // 月份名稱
     const monthNames = [
         '一月', '二月', '三月', '四月', '五月', '六月',
         '七月', '八月', '九月', '十月', '十一月', '十二月'
     ];
 
-    // 星期名稱
     const weekDayNames = ['日', '一', '二', '三', '四', '五', '六'];
 
-    // 處理排班
     const handleAssign = (employeeId: string, shiftName: string) => {
         if (selectedDate) {
-            // 確保不會重複新增相同的排班
             const existingAssignment = assignments.find(
                 a => a.date === selectedDate && a.employeeId === employeeId
             );
@@ -626,13 +793,11 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
         }
     };
 
-    // 處理刪除按鈕點擊
     const handleDeleteClick = (assignment: ShiftAssignment) => {
         setAssignmentToDelete(assignment);
         setDeleteDialogOpen(true);
     };
 
-    // 確認刪除
     const handleConfirmDelete = () => {
         if (assignmentToDelete) {
             setAssignments(assignments.filter(a =>
@@ -644,27 +809,199 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
         setAssignmentToDelete(null);
     };
 
-    // 取消刪除
     const handleCancelDelete = () => {
         setDeleteDialogOpen(false);
         setAssignmentToDelete(null);
     };
 
-    // --- Handler for the new validation button ---
+    const handleShiftClick = (assignment: ShiftAssignment) => {
+        if (!isEditMode) return;
+
+        if (swapStep === 'none') {
+            // Start Step 1: Select the new shift for the source
+            setSwapSourceInfo({
+                employeeId: assignment.employeeId,
+                date: assignment.date,
+                originalShiftName: assignment.shiftName
+            });
+            setSwapSelectedNewShift(assignment.shiftName);
+            setSwapStep('selectNewShift');
+            setSelectNewShiftDialogOpen(true);
+        } else if (swapStep === 'selectTargetShift' && swapSourceInfo && swapSelectedNewShift) {
+            // Handle Step 2: Selecting the target shift
+            const targetAssignment = assignment;
+            const sourceEmpId = swapSourceInfo.employeeId;
+
+            // Ignore clicks on the source employee's shifts
+            if (targetAssignment.employeeId === sourceEmpId) {
+                console.log("Cannot select source employee's own shift as target.");
+                return;
+            }
+
+            // Check if the clicked target is valid
+            const isValid = checkSwapValidity(
+                swapSourceInfo,
+                swapSelectedNewShift,
+                targetAssignment,
+                assignments,
+                employees,
+                currentDate.getFullYear(),
+                currentDate.getMonth()
+            );
+
+            if (isValid) {
+                console.log("Valid target selected:", targetAssignment);
+                setSwapTargetInfo({
+                    employeeId: targetAssignment.employeeId,
+                    date: targetAssignment.date,
+                    originalShiftName: targetAssignment.shiftName
+                });
+                setSwapConfirmDialogOpen(true); // Open confirmation dialog
+            } else {
+                console.log("Invalid target selected:", targetAssignment);
+                // Optionally show a temporary message or rely on visual cues
+                setSwapErrorMessage("選擇的目標班別交換後會違反規則");
+                setSwapErrorSnackbarOpen(true);
+            }
+        }
+    };
+
+    const handleSelectNewShiftChange = (event: React.ChangeEvent<{ value: unknown }>) => {
+        setSwapSelectedNewShift(event.target.value as string);
+    };
+
+    const handleSelectNewShiftConfirm = () => {
+        if (!swapSourceInfo || !swapSelectedNewShift) return; // Should not happen
+
+        // --- Check if ANY valid target exists BEFORE proceeding to Step 2 --- 
+        let foundValidTarget = false;
+        for (const potentialTarget of assignments) {
+            // Skip assignments belonging to the source employee
+            if (potentialTarget.employeeId === swapSourceInfo.employeeId) {
+                continue;
+            }
+
+            // Check validity
+            const isValid = checkSwapValidity(
+                swapSourceInfo,
+                swapSelectedNewShift,
+                potentialTarget,
+                assignments,
+                employees,
+                currentDate.getFullYear(),
+                currentDate.getMonth()
+            );
+
+            if (isValid) {
+                foundValidTarget = true;
+                break; // Found at least one, no need to check further
+            }
+        }
+        // --- End Check ---
+
+        if (foundValidTarget) {
+            // Proceed to Step 2 only if a valid target exists
+            setSwapStep('selectTargetShift');
+            setSelectNewShiftDialogOpen(false);
+            console.log(`Step 2: Source ${swapSourceInfo.employeeId} on ${swapSourceInfo.date} (original: ${swapSourceInfo.originalShiftName}) wants to become ${swapSelectedNewShift}. Found valid targets. Now select target.`);
+        } else {
+            // No valid targets found, show error and reset
+            setSwapErrorMessage("沒有找到任何可以與此班別進行有效交換的目標");
+            setSwapErrorSnackbarOpen(true);
+            handleSwapCancel(); // Reset the state immediately
+            console.log(`Swap aborted: No valid targets found for ${swapSourceInfo.employeeId} on ${swapSourceInfo.date} wanting to become ${swapSelectedNewShift}.`);
+        }
+    };
+
+    const handleSelectNewShiftCancel = () => {
+        handleSwapCancel(); // Use the generic cancel function
+    };
+
+    const handleConfirmSwap = () => {
+        if (!swapSourceInfo || !swapTargetInfo || !swapSelectedNewShift) return;
+
+        const sourceEmpId = swapSourceInfo.employeeId;
+        const sourceDate = swapSourceInfo.date;
+        const originalSourceShift = swapSourceInfo.originalShiftName;
+        const newSourceShift = swapSelectedNewShift;
+
+        const targetEmpId = swapTargetInfo.employeeId;
+        const targetDate = swapTargetInfo.date;
+        const originalTargetShift = swapTargetInfo.originalShiftName;
+
+        // Simulate again just to be safe before final validation? Or rely on check before dialog?
+        // Let's rely on the check done before opening the dialog (checkSwapValidity)
+
+        const simulatedAssignments = assignments.map(a => {
+            if (a.employeeId === sourceEmpId && a.date === sourceDate) {
+                return { ...a, shiftName: newSourceShift };
+            }
+            if (a.employeeId === targetEmpId && a.date === targetDate) {
+                return { ...a, shiftName: originalSourceShift }; // Target gets source's original
+            }
+            return a;
+        });
+
+        // Final validation (optional redundancy)
+        const sourceEmployee = employees.find(e => e.id === sourceEmpId);
+        const targetEmployee = employees.find(e => e.id === targetEmpId);
+        if (!sourceEmployee || !targetEmployee) return;
+        const validationResults = validateScheduleRules(simulatedAssignments, [sourceEmployee, targetEmployee], currentDate.getFullYear(), currentDate.getMonth());
+        if (validationResults.length > 0) {
+            setSwapErrorMessage(`換班失敗，最後檢查發現違反規則：${validationResults.join(' ')}`);
+            setSwapErrorSnackbarOpen(true);
+            handleSwapCancel();
+            return;
+        }
+
+        // Update state
+        setAssignments(simulatedAssignments);
+
+        // --- Update History with Simplified Format ---
+        const sourceEmpName = sourceEmployee.name;
+        const targetEmpName = targetEmployee.name;
+        setSwapHistory(prev => [
+            {
+                timestamp: new Date().toLocaleString('zh-TW'),
+                sourceEmployeeName: sourceEmpName,
+                sourceDate: sourceDate,
+                sourceOriginalShift: originalSourceShift,
+                sourceNewShift: newSourceShift, // The shift source selected
+                targetEmployeeName: targetEmpName,
+                targetDate: targetDate,
+                targetOriginalShift: originalTargetShift,
+                targetNewShift: originalSourceShift // The shift target received
+            },
+            ...prev // Add to the beginning for most recent first
+        ]);
+
+        // Reset swap state
+        handleSwapCancel();
+    };
+
+    const handleSwapCancel = () => {
+        setSwapStep('none');
+        setSwapSourceInfo(null);
+        setSwapSelectedNewShift(null);
+        setSwapTargetInfo(null);
+        setSelectNewShiftDialogOpen(false);
+        setSwapConfirmDialogOpen(false);
+        // Highlighting will automatically reset
+    };
+
     const handleValidateSchedule = () => {
         console.log("Validating schedule...");
         const errors = validateScheduleRules(assignments, employees, currentDate.getFullYear(), currentDate.getMonth());
         setValidationErrors(errors);
         if (errors.length > 0) {
-            setShowValidationErrorDialog(true); // Show error dialog if errors exist
+            setShowValidationErrorDialog(true);
         } else {
-            setShowSuccessSnackbar(true); // Show success message if no errors
-            setShowValidationErrorDialog(false); // Ensure dialog is closed if no errors
+            setShowSuccessSnackbar(true);
+            setShowValidationErrorDialog(false);
         }
         console.log("Validation errors:", errors);
     };
 
-    // Handler to close success snackbar
     const handleCloseSnackbar = (event?: React.SyntheticEvent | Event, reason?: string) => {
         if (reason === 'clickaway') {
             return;
@@ -674,11 +1011,10 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
 
     const handleGenerateTestSchedule = () => {
         const newAssignments = generateTestSchedule(currentDate.getFullYear(), currentDate.getMonth(), employees);
-        console.log("Generated Test Assignments:", newAssignments); // Log generated data
+        console.log("Generated Test Assignments:", newAssignments);
         setAssignments(newAssignments);
     };
 
-    // 處理員工選擇
     const handleEmployeeToggle = (employeeId: string) => {
         setSelectedEmployees(prev => {
             if (prev.includes(employeeId)) {
@@ -689,7 +1025,6 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
         });
     };
 
-    // 處理全選/取消全選
     const handleSelectAllEmployees = () => {
         if (selectedEmployees.length === employees.length) {
             setSelectedEmployees([]);
@@ -698,17 +1033,77 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
         }
     };
 
-    // Log: Check assignments state during render
-    console.log(`[Schedule Render] Assignments length: ${assignments.length}`);
+    const formatShortDate = (dateStr: string): string => {
+        try {
+            return format(parse(dateStr, 'yyyy-MM-dd', new Date()), 'MM/dd');
+        } catch {
+            return dateStr;
+        }
+    };
+
+    const allShiftNames = Array.from(shiftDetailsMap.keys());
+
+    // --- Calculate Highlighting/Disabled State (UPDATED with Alignment) ---
+    const getShiftBoxStyle = (assignment: ShiftAssignment): React.CSSProperties => {
+        const colorPalette = getShiftColor(assignment.shiftName);
+        const baseStyle: React.CSSProperties = {
+            padding: '2px 4px', // Adjusted base padding slightly
+            borderRadius: '4px',
+            border: '1px solid transparent',
+            fontSize: '0.8rem',
+            position: 'relative', // Ensure parent is relative for absolute child (delete button)
+            cursor: isEditMode ? 'pointer' : 'default',
+            backgroundColor: colorPalette.main,
+            color: '#fff',
+            textAlign: isEditMode ? 'left' : 'center', // Conditional alignment
+            minWidth: '70px',
+            margin: '1px 0',
+            opacity: 1,
+            transition: 'opacity 0.3s ease, background-color 0.3s ease, border 0.3s ease',
+            // Add paddingRight in edit mode to avoid overlap with delete btn
+            paddingRight: isEditMode ? '20px' : '4px',
+        };
+
+        let dynamicStyle: React.CSSProperties = {};
+
+        if (isEditMode && swapStep === 'selectTargetShift' && swapSourceInfo && swapSelectedNewShift) {
+            const isSourceAssignment = assignment.employeeId === swapSourceInfo.employeeId && assignment.date === swapSourceInfo.date;
+            const isSourceEmployee = assignment.employeeId === swapSourceInfo.employeeId;
+            if (isSourceAssignment) {
+                dynamicStyle = { border: '2px solid #ffcc00', cursor: 'not-allowed' };
+            } else if (isSourceEmployee) {
+                dynamicStyle = { opacity: 0.4, cursor: 'not-allowed' };
+            } else {
+                const isValidTarget = checkSwapValidity(
+                    swapSourceInfo,
+                    swapSelectedNewShift,
+                    assignment,
+                    assignments,
+                    employees,
+                    currentDate.getFullYear(),
+                    currentDate.getMonth()
+                );
+                if (!isValidTarget) {
+                    dynamicStyle = { opacity: 0.4, cursor: 'not-allowed' };
+                } else {
+                    dynamicStyle = { cursor: 'crosshair' };
+                }
+            }
+        }
+
+        // Add hover effect (only if clickable)
+        const hoverStyle = (dynamicStyle.cursor !== 'not-allowed' && baseStyle.cursor !== 'default') ? { // Check base cursor too
+            '&:hover': {
+                backgroundColor: colorPalette.light,
+                filter: 'brightness(1.1)'
+            }
+        } : {};
+
+        return { ...baseStyle, ...dynamicStyle, ...hoverStyle };
+    };
 
     return (
-        <Box sx={{
-            display: 'flex',
-            flexDirection: 'column',
-            width: '100%',
-            p: 2,
-        }}>
-            {/* Header Section */}
+        <Box sx={{ display: 'flex', height: '100vh', flexDirection: 'column' }}>
             <Box sx={{
                 display: 'flex',
                 justifyContent: 'space-between',
@@ -719,7 +1114,6 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
                 <Typography variant="h4" component="h1">
                     排班表
                 </Typography>
-                {/* Month Navigation and Action Buttons */}
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                     <IconButton onClick={() => handleMonthChange(-1)} size="small">
                         <ChevronLeftIcon />
@@ -730,7 +1124,6 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
                     <IconButton onClick={() => handleMonthChange(1)} size="small">
                         <ChevronRightIcon />
                     </IconButton>
-                    {/* Add Validation Button */}
                     <Button
                         variant="outlined"
                         color="secondary"
@@ -740,6 +1133,15 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
                         startIcon={<CheckCircleOutlineIcon />}
                     >
                         檢查規則
+                    </Button>
+                    <Button
+                        variant={isEditMode ? "contained" : "outlined"}
+                        color="info"
+                        onClick={() => setIsEditMode(!isEditMode)}
+                        size="small"
+                        sx={{ ml: 1 }}
+                    >
+                        {isEditMode ? "完成編輯" : "編輯班表"}
                     </Button>
                     <Button
                         variant="contained"
@@ -753,61 +1155,55 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
                 </Box>
             </Box>
 
-            {/* Main Content Area (Employee List + Calendar) */}
-            <Box sx={{ display: 'flex', gap: 2 }}>
-                {/* Employee List Sidebar */}
+            <Box sx={{ display: 'flex', flexGrow: 1, overflow: 'hidden', p: 1 }}>
                 <Paper sx={{
-                    width: drawerOpen ? 200 : 0,
-                    minWidth: drawerOpen ? 200 : 0,
+                    width: drawerOpen ? 240 : 0,
+                    flexShrink: 0,
+                    mr: drawerOpen ? 1 : 0,
                     overflowY: 'auto',
-                    transition: (theme: any) => theme.transitions.create('width', {
-                        easing: theme.transitions.easing.sharp,
-                        duration: theme.transitions.duration.enteringScreen,
-                    }),
-                    display: 'flex',
-                    flexDirection: 'column',
-                    flexShrink: 0
+                    transition: 'width 0.3s ease',
+                    p: drawerOpen ? 1 : 0,
+                    opacity: drawerOpen ? 1 : 0,
+                    borderRight: '1px solid #eee'
                 }}>
-                    <Box sx={{ p: 2 }}>
-                        <Typography variant="h6" sx={{ mb: 2 }}>
-                            員工列表
-                        </Typography>
-                        <ListItemButton
-                            onClick={handleSelectAllEmployees}
-                            sx={{ pl: 0 }}
-                        >
-                            <Checkbox
-                                edge="start"
-                                checked={selectedEmployees.length === employees.length}
-                                indeterminate={selectedEmployees.length > 0 && selectedEmployees.length < employees.length}
-                            />
-                            <ListItemText primary="全選" />
-                        </ListItemButton>
-                        <Divider />
-                        <List sx={{ overflow: 'auto' }}>
-                            {employees.map((employee) => (
-                                <ListItemButton
-                                    key={employee.id}
-                                    onClick={() => handleEmployeeToggle(employee.id)}
-                                    sx={{ pl: 0 }}
-                                >
-                                    <Checkbox
-                                        edge="start"
-                                        checked={selectedEmployees.includes(employee.id)}
-                                    />
-                                    <ListItemText primary={employee.name} />
-                                </ListItemButton>
-                            ))}
-                        </List>
-                    </Box>
+                    {drawerOpen && (
+                        <Box>
+                            <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 'bold' }}>
+                                員工列表
+                            </Typography>
+                            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                                <Button onClick={handleSelectAllEmployees} size="small">
+                                    {selectedEmployees.length === employees.length ? '取消全選' : '全選'}
+                                </Button>
+                            </Box>
+                            <List dense>
+                                {employees.map(employee => (
+                                    <ListItem key={employee.id} disablePadding>
+                                        <ListItemButton onClick={() => handleEmployeeToggle(employee.id)} dense>
+                                            <ListItemIcon sx={{ minWidth: 'auto', mr: 1 }}>
+                                                <Checkbox
+                                                    edge="start"
+                                                    checked={selectedEmployees.includes(employee.id)}
+                                                    tabIndex={-1}
+                                                    disableRipple
+                                                    size="small"
+                                                />
+                                            </ListItemIcon>
+                                            <ListItemText
+                                                primary={employee.name}
+                                                secondary={employee.specialty}
+                                                primaryTypographyProps={{ sx: { fontWeight: 500 } }}
+                                                secondaryTypographyProps={{ sx: { fontSize: '0.75rem', opacity: 0.8 } }}
+                                            />
+                                        </ListItemButton>
+                                    </ListItem>
+                                ))}
+                            </List>
+                        </Box>
+                    )}
                 </Paper>
 
-                {/* Calendar Table */}
-                <Paper sx={{
-                    flexGrow: 1,
-                    display: 'flex',
-                    flexDirection: 'column',
-                }}>
+                <Paper sx={{ flexGrow: 1, overflow: 'auto' }}>
                     <TableContainer component={Paper} sx={{ mt: 2, position: 'relative', zIndex: 1 }}>
                         <Table stickyHeader aria-label="sticky schedule table">
                             <TableHead>
@@ -833,7 +1229,6 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
                                 {calendarData.map((week, weekIndex) => (
                                     <TableRow key={weekIndex}>
                                         {week.map((day, dayIndex) => {
-                                            // Calculate date string for this cell
                                             let targetYear = currentDate.getFullYear();
                                             let targetMonth = currentDate.getMonth();
                                             if (!day.isCurrentMonth) {
@@ -845,103 +1240,90 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
 
                                             return (
                                                 <TableCell
-                                                    key={dayIndex}
-                                                    align="center"
-                                                    onClick={() => handleDateClick(
-                                                        currentDate.getFullYear(),
-                                                        currentDate.getMonth(),
-                                                        day.day,
-                                                        day.isCurrentMonth
-                                                    )}
+                                                    key={`${weekIndex}-${dayIndex}`}
+                                                    align="left"
+                                                    valign="top"
                                                     sx={{
-                                                        height: '120px',
-                                                        verticalAlign: 'top',
-                                                        cursor: 'pointer',
-                                                        p: '4px 8px',
-                                                        '&:hover': {
-                                                            bgcolor: 'rgba(0, 0, 0, 0.04)',
-                                                        },
-                                                        ...(day && !day.isCurrentMonth && {
-                                                            bgcolor: '#f5f5f5',
-                                                            color: '#999'
-                                                        })
+                                                        border: '1px solid #eee',
+                                                        height: 150,
+                                                        overflow: 'hidden',
+                                                        bgcolor: day.isCurrentMonth ? 'background.paper' : '#f5f5f5',
+                                                        position: 'relative',
+                                                        p: 0.5
                                                     }}
                                                 >
-                                                    <Box sx={{ mb: 1, textAlign: 'right', fontSize: '0.8rem', color: day.isCurrentMonth ? 'inherit' : '#bbb' }}>{day.day}</Box>
-                                                    <Box sx={{
-                                                        display: 'flex',
-                                                        flexDirection: 'column',
-                                                        gap: 0.5,
-                                                        alignItems: 'center',
-                                                        maxHeight: 'calc(100% - 24px)',
-                                                        overflowY: 'auto',
-                                                        width: '100%',
-                                                        '&::-webkit-scrollbar': { width: '4px' },
-                                                        '&::-webkit-scrollbar-thumb': { backgroundColor: 'rgba(0,0,0,0.1)', borderRadius: '2px' }
-                                                    }}>
-                                                        {displays.map((shift, index) => (
-                                                            <Box
-                                                                key={`${shift.employeeId}-${index}`}
-                                                                sx={{
-                                                                    display: 'flex',
-                                                                    alignItems: 'center',
-                                                                    backgroundColor: getShiftColor(shift.shiftName).main,
-                                                                    color: 'white',
-                                                                    borderRadius: 1,
-                                                                    p: '2px 4px',
-                                                                    pl: 1,
-                                                                    pr: '28px',
-                                                                    mb: 0.5,
-                                                                    position: 'relative',
-                                                                    width: '100%',
-                                                                    fontSize: '0.7rem',
-                                                                    minHeight: '24px',
-                                                                    overflow: 'hidden',
-                                                                    '&:hover': {
-                                                                        backgroundColor: getShiftColor(shift.shiftName).light,
-                                                                        color: 'rgba(0, 0, 0, 0.87)',
-                                                                        '& .deleteButton': { color: 'rgba(0, 0, 0, 0.87)' }
-                                                                    }
+                                                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
+                                                        <Typography
+                                                            variant="body2"
+                                                            sx={{ fontWeight: day.isCurrentMonth ? 'bold' : 'normal', color: day.isCurrentMonth ? 'text.primary' : 'text.secondary' }}
+                                                        >
+                                                            {day.day}
+                                                        </Typography>
+                                                        {day.isCurrentMonth && (
+                                                            <IconButton
+                                                                size="small"
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    handleDateClick(currentDate.getFullYear(), currentDate.getMonth(), day.day, day.isCurrentMonth);
                                                                 }}
+                                                                aria-label={`add shift for day ${day.day}`}
+                                                                sx={{ padding: 0.2 }}
                                                             >
-                                                                <Typography
-                                                                    variant="caption"
-                                                                    sx={{
-                                                                        flex: 1,
-                                                                        overflow: 'hidden',
-                                                                        textOverflow: 'ellipsis',
-                                                                        whiteSpace: 'nowrap',
-                                                                        lineHeight: 1.2
-                                                                    }}
+                                                                <AddIcon fontSize="inherit" />
+                                                            </IconButton>
+                                                        )}
+                                                    </Box>
+
+                                                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                                                        {displays.map((shift, index) => {
+                                                            const assignmentData = { employeeId: shift.employeeId, date: dateStr, shiftName: shift.shiftName };
+                                                            return (
+                                                                <Box
+                                                                    key={`${shift.employeeId}-${index}`}
+                                                                    onClick={() => handleShiftClick(assignmentData)}
+                                                                    className="shift-box"
+                                                                    sx={getShiftBoxStyle(assignmentData)}
                                                                 >
-                                                                    {`${shift.employeeName} - ${shift.shiftName}`}
-                                                                </Typography>
-                                                                <IconButton
-                                                                    className="deleteButton"
-                                                                    size="small"
-                                                                    sx={{
-                                                                        color: 'white',
-                                                                        padding: '1px',
-                                                                        position: 'absolute',
-                                                                        right: 2,
-                                                                        top: '50%',
-                                                                        transform: 'translateY(-50%)',
-                                                                        width: '18px', height: '18px', minWidth: '18px',
-                                                                        '&:hover': { backgroundColor: 'rgba(255,255,255,0.2)' }
-                                                                    }}
-                                                                    onClick={(e: React.MouseEvent) => {
-                                                                        e.stopPropagation();
-                                                                        handleDeleteClick({
-                                                                            employeeId: shift.employeeId,
-                                                                            date: dateStr,
-                                                                            shiftName: shift.shiftName
-                                                                        });
-                                                                    }}
-                                                                >
-                                                                    <CloseIcon sx={{ fontSize: '0.8rem' }} />
-                                                                </IconButton>
-                                                            </Box>
-                                                        ))}
+                                                                    <Typography
+                                                                        variant="caption"
+                                                                        sx={{
+                                                                            overflow: 'hidden',
+                                                                            textOverflow: 'ellipsis',
+                                                                            whiteSpace: 'nowrap',
+                                                                            lineHeight: 1.2,
+                                                                            display: 'block',
+                                                                        }}
+                                                                    >
+                                                                        {`${shift.employeeName} - ${shift.shiftName}`}
+                                                                    </Typography>
+                                                                    {isEditMode && swapStep === 'none' && (
+                                                                        <IconButton
+                                                                            aria-label="delete assignment"
+                                                                            size="small"
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                handleDeleteClick(assignmentData);
+                                                                            }}
+                                                                            sx={{
+                                                                                position: 'absolute',
+                                                                                top: 1,
+                                                                                right: 1,
+                                                                                padding: '1px',
+                                                                                color: 'rgba(255, 255, 255, 0.7)',
+                                                                                backgroundColor: 'rgba(0, 0, 0, 0.1)',
+                                                                                '&:hover': {
+                                                                                    color: '#fff',
+                                                                                    backgroundColor: 'rgba(0, 0, 0, 0.3)'
+                                                                                },
+                                                                                zIndex: 2,
+                                                                            }}
+                                                                        >
+                                                                            <CancelIcon sx={{ fontSize: '14px' }} />
+                                                                        </IconButton>
+                                                                    )}
+                                                                </Box>
+                                                            );
+                                                        })}
                                                     </Box>
                                                 </TableCell>
                                             );
@@ -954,7 +1336,6 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
                 </Paper>
             </Box>
 
-            {/* ... (Existing Dialogs: Assignment, Delete Confirm) ... */}
             <Dialog
                 open={openDialog}
                 onClose={() => setOpenDialog(false)}
@@ -1008,7 +1389,6 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
                 </DialogActions>
             </Dialog>
 
-            {/* Success Snackbar */}
             <Snackbar
                 open={showSuccessSnackbar}
                 autoHideDuration={4000}
@@ -1020,11 +1400,10 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
                 </Alert>
             </Snackbar>
 
-            {/* Validation Error Dialog */}
             <Dialog
                 open={showValidationErrorDialog}
                 onClose={() => setShowValidationErrorDialog(false)}
-                maxWidth="md" // Adjust size as needed
+                maxWidth="md"
             >
                 <DialogTitle sx={{ display: 'flex', alignItems: 'center' }}>
                     <ErrorOutlineIcon sx={{ mr: 1, color: 'error.main' }} />
@@ -1049,7 +1428,81 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
                 </DialogActions>
             </Dialog>
 
-            {/* Statistics Table */}
+            <Dialog open={selectNewShiftDialogOpen} onClose={handleSelectNewShiftCancel}>
+                <DialogTitle>選擇新班別</DialogTitle>
+                <DialogContent>
+                    {swapSourceInfo && (
+                        <Typography sx={{ mb: 2 }}>
+                            您希望將 <strong>{employees.find(e => e.id === swapSourceInfo.employeeId)?.name}</strong> 在 <strong>{formatShortDate(swapSourceInfo.date)}</strong> 的班別
+                            (原: <strong>{swapSourceInfo.originalShiftName}</strong>) 更換成：
+                        </Typography>
+                    )}
+                    <FormControl fullWidth>
+                        <InputLabel id="select-new-shift-label">新班別</InputLabel>
+                        <Select
+                            labelId="select-new-shift-label"
+                            value={swapSelectedNewShift ?? ''}
+                            label="新班別"
+                            onChange={(e) => setSwapSelectedNewShift(e.target.value as string)}
+                        >
+                            {allShiftNames.map(shiftName => (
+                                <MenuItem key={shiftName} value={shiftName}>
+                                    {shiftName}
+                                </MenuItem>
+                            ))}
+                        </Select>
+                    </FormControl>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={handleSelectNewShiftCancel}>取消</Button>
+                    <Button onClick={handleSelectNewShiftConfirm} variant="contained" disabled={!swapSelectedNewShift}>確認</Button>
+                </DialogActions>
+            </Dialog>
+
+            <Dialog open={swapConfirmDialogOpen} onClose={handleSwapCancel}>
+                <DialogTitle>確認換班？</DialogTitle>
+                <DialogContent>
+                    {swapSourceInfo && swapTargetInfo && swapSelectedNewShift && (
+                        (() => {
+                            const sourceEmp = employees.find(e => e.id === swapSourceInfo.employeeId);
+                            const targetEmp = employees.find(e => e.id === swapTargetInfo.employeeId);
+                            if (!sourceEmp || !targetEmp) return null;
+                            const sourceDateShort = formatShortDate(swapSourceInfo.date);
+                            const targetDateShort = formatShortDate(swapTargetInfo.date);
+                            return (
+                                <Typography>
+                                    確認將 <strong>{sourceEmp.name}</strong> 在 <strong>{sourceDateShort}</strong> 的班
+                                    (原: <strong>{swapSourceInfo.originalShiftName}</strong> → 新: <strong>{swapSelectedNewShift}</strong>)
+                                    <br />
+                                    與 <strong>{targetEmp.name}</strong> 在 <strong>{targetDateShort}</strong> 的班
+                                    (原: <strong>{swapTargetInfo.originalShiftName}</strong>)
+                                    交換嗎？
+                                    <br /><br />
+                                    <small>(交換後，<strong>{targetEmp.name}</strong> 在 <strong>{targetDateShort}</strong> 會變成 <strong>{swapSourceInfo.originalShiftName}</strong>)</small>
+                                </Typography>
+                            );
+                        })()
+                    )}
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={handleSwapCancel}>取消</Button>
+                    <Button onClick={handleConfirmSwap} color="primary" variant="contained">
+                        確認交換
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
+            <Snackbar
+                open={swapErrorSnackbarOpen}
+                autoHideDuration={6000}
+                onClose={() => setSwapErrorSnackbarOpen(false)}
+                anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+            >
+                <Alert onClose={() => setSwapErrorSnackbarOpen(false)} severity="error" sx={{ width: '100%' }}>
+                    {swapErrorMessage}
+                </Alert>
+            </Snackbar>
+
             <Paper sx={{ mt: 2, p: 2, overflowX: 'auto', flexShrink: 0 }}>
                 <Typography variant="h6" sx={{ mb: 2 }}>
                     本月班別統計
@@ -1058,6 +1511,7 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
                     <TableHead>
                         <TableRow>
                             <TableCell>員工姓名</TableCell>
+                            <TableCell align="center">總上班天數</TableCell>
                             <TableCell align="center">白班</TableCell>
                             <TableCell align="center">配器械班</TableCell>
                             <TableCell align="center">小夜班</TableCell>
@@ -1079,6 +1533,9 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
                             return (
                                 <TableRow key={employee.id}>
                                     <TableCell>{employee.name}</TableCell>
+                                    <TableCell align="center" sx={{ color: (stats['總上班天數'] || 0) < 11 ? 'error.main' : 'inherit' }}>
+                                        {stats['總上班天數'] || 0}
+                                    </TableCell>
                                     <TableCell align="center">{stats['白班'] || 0}</TableCell>
                                     <TableCell align="center">{stats['配器械班'] || 0}</TableCell>
                                     <TableCell align="center" sx={{ color: (stats['小夜班'] || 0) >= 15 ? 'orange' : 'inherit' }}>
@@ -1102,6 +1559,26 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
                     </TableBody>
                 </Table>
             </Paper>
+
+            {swapHistory.length > 0 && (
+                <Paper sx={{ mt: 2, p: 2 }}>
+                    <Typography variant="h6" sx={{ mb: 2 }}>
+                        換班歷史紀錄
+                    </Typography>
+                    <List dense>
+                        {swapHistory.map((record, index) => {
+                            const sourceDateShort = formatShortDate(record.sourceDate);
+                            const targetDateShort = formatShortDate(record.targetDate);
+                            const historyString = `[${record.timestamp}] ${record.sourceEmployeeName} (${sourceDateShort}: ${record.sourceOriginalShift} → ${record.sourceNewShift}) 與 ${record.targetEmployeeName} (${targetDateShort}: ${record.targetOriginalShift} → ${record.targetNewShift}) 交換`;
+                            return (
+                                <ListItem key={index} divider>
+                                    <ListItemText primary={historyString} />
+                                </ListItem>
+                            );
+                        })}
+                    </List>
+                </Paper>
+            )}
         </Box>
     );
 };
