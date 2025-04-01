@@ -227,31 +227,6 @@ const validateScheduleRules = (assignments: ShiftAssignment[], employees: Employ
     return Array.from(new Set(errors));
 };
 
-// Helper function to check potential swap conflicts
-const checkSwapConflict = (source: ShiftAssignment, target: ShiftAssignment, assignments: ShiftAssignment[], employees: Employee[]): string | null => {
-    // Check if target employee already has a shift on the source date
-    const targetConflict = assignments.find(a =>
-        a.employeeId === target.employeeId &&
-        a.date === source.date &&
-        a.employeeId !== source.employeeId // Exclude the source itself
-    );
-    if (targetConflict) {
-        return `換班失敗：${employees.find(e => e.id === target.employeeId)?.name} 在 ${source.date} 已有班 (${targetConflict.shiftName})。`;
-    }
-
-    // Check if source employee already has a shift on the target date
-    const sourceConflict = assignments.find(a =>
-        a.employeeId === source.employeeId &&
-        a.date === target.date &&
-        a.employeeId !== target.employeeId // Exclude the target itself
-    );
-    if (sourceConflict) {
-        return `換班失敗：${employees.find(e => e.id === source.employeeId)?.name} 在 ${target.date} 已有班 (${sourceConflict.shiftName})。`;
-    }
-
-    return null; // No conflict
-};
-
 // 工具函數：取得指定日期是星期幾（0-6）
 const getWeekDay = (year: number, month: number, day: number) => {
     return new Date(year, month, day).getDay();
@@ -313,7 +288,6 @@ const generateTestSchedule = (year: number, month: number, employees: Employee[]
     const daysInMonth = getDaysInMonthFromDateFns(new Date(year, month));
     const allShiftNames = Array.from(shiftDetailsMap.keys());
     const workShiftNames = allShiftNames.filter(name => shiftDetailsMap.get(name)?.isWorkShift);
-    const offShiftNames = ['休假', '例假'];
     const standbyShiftNames = allShiftNames.filter(name => {
         const details = shiftDetailsMap.get(name);
         return details && !details.isWorkShift && !details.isOffShift;
@@ -344,7 +318,6 @@ const generateTestSchedule = (year: number, month: number, employees: Employee[]
 
     const check7DayRestRule = (employeeId: string, currentDateStr: string): { needsRest: boolean, needsMandatory: boolean } => {
         const currentCheckDate = parse(currentDateStr, 'yyyy-MM-dd', new Date());
-        const startDate = subDays(currentCheckDate, 6);
         let hasRestDay = false;
         let hasMandatoryOff = false;
         // Access the MAIN assignments array
@@ -578,52 +551,6 @@ const getFilteredShiftDisplays = (
     return result;
 };
 
-// 將統計函數移到元件外部
-const calculateShiftStatistics = (assignments: ShiftAssignment[], employees: Employee[]) => {
-    const statistics: { [key: string]: { [key: string]: number } } = {};
-
-    // 初始化統計物件
-    employees.forEach(emp => {
-        statistics[emp.id] = { // Use emp.id consistently
-            '總上班天數': 0, // ADDED: Initialize total work days
-            '白班': 0,
-            '配器械班': 0,
-            '小夜班': 0,
-            '大夜班': 0,
-            '12-8班': 0,
-            '9-5班': 0,
-            '白班待命': 0,
-            '小夜待命': 0,
-            '大夜待命': 0,
-            'Off日待': 0,
-            'Off夜待': 0,
-            '休假': 0,
-            '例假': 0
-        };
-    });
-
-    // 統計每個員工的班別數量
-    assignments.forEach(assignment => {
-        // 確保用 employee.id 來查找
-        const employee = employees.find(e => e.id === assignment.employeeId);
-        if (employee && statistics[employee.id]) {
-            const shiftDetails = shiftDetailsMap.get(assignment.shiftName);
-            if (shiftDetails && statistics[employee.id][assignment.shiftName] !== undefined) {
-                statistics[employee.id][assignment.shiftName]++;
-                // Increment total work days if it's a work shift
-                if (shiftDetails.isWorkShift) {
-                    statistics[employee.id]['總上班天數']++;
-                }
-            } else {
-                // Optionally log or handle unexpected shift names
-                console.warn(`Unknown shift name found during statistics: ${assignment.shiftName}`);
-            }
-        }
-    });
-
-    return statistics;
-};
-
 // --- Helper Function to Check Swap Validity ---
 const checkSwapValidity = (
     sourceInfo: { employeeId: string, date: string, originalShiftName: string },
@@ -686,29 +613,26 @@ const Schedule: React.FC<ScheduleProps> = ({ employees: initialEmployeesFromProp
     const [selectedEmployees, setSelectedEmployees] = useState<string[]>(initialEmployeesFromProps.map(e => e.id));
     const [newShiftForSource, setNewShiftForSource] = useState<string>('');
 
-    // Dependency for the second useEffect
-    const initialEmployeeIdsString = JSON.stringify(initialEmployeesFromProps.map(e => e.id).sort());
-    const selectedEmployeesString = JSON.stringify(selectedEmployees.sort());
-
     // First useEffect: Reset assignments on month/year change
     useEffect(() => {
         setAssignments([]);
     }, [currentDate.getFullYear(), currentDate.getMonth()]);
 
-    // Second useEffect: Update internal employees state based on props
+    // Second useEffect: Update internal employees state based on props (Refactored)
     useEffect(() => {
         setEmployeesInternal(initialEmployeesFromProps);
-        if (initialEmployeeIdsString !== selectedEmployeesString) {
+        // Perform comparison inside the effect
+        const currentInitialIdsString = JSON.stringify(initialEmployeesFromProps.map(e => e.id).sort());
+        const currentSelectedIdsString = JSON.stringify(selectedEmployees.sort());
+        if (currentInitialIdsString !== currentSelectedIdsString) {
             setSelectedEmployees(initialEmployeesFromProps.map(e => e.id));
         }
-    }, [initialEmployeesFromProps, initialEmployeeIdsString, selectedEmployeesString]); // Added extracted strings
+    }, [initialEmployeesFromProps, selectedEmployees]); // Keep selectedEmployees here if its update logic depends on it, or remove if update logic is purely based on props change
 
-    // Third useEffect: Added dependency for selectedEmployees (example usage, can be adapted)
+    // Third useEffect: Example dependency on selectedEmployees
     useEffect(() => {
-        // Example: Log when selected employees change
         console.log('Selected employees updated:', selectedEmployees);
-        // If you need to perform actions based on selectedEmployees, do it here
-    }, [selectedEmployees]); // Added selectedEmployees dependency
+    }, [selectedEmployees]);
 
     const handleDateClick = (year: number, month: number, day: number, isCurrentMonth: boolean) => {
         let targetYear = year;
