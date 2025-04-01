@@ -284,85 +284,133 @@ const generateCalendarData = (year: number, month: number) => {
     return weeks;
 };
 
-// !!重新加入 generateTestSchedule 函數定義!!
+// --- 更新 generateTestSchedule ---
 const generateTestSchedule = (year: number, month: number, employees: Employee[]): ShiftAssignment[] => {
     console.log(`[generateTestSchedule] Generating for ${year}-${month + 1} with ${employees.length} employees.`); // Log: Start
-    if (employees.length === 0) {
-        console.log("[generateTestSchedule] No employees provided, returning empty array."); // Log: No employees
-        return [];
-    }
 
     const assignments: ShiftAssignment[] = [];
     const daysInMonth = getDaysInMonthFromDateFns(new Date(year, month));
-    console.log(`[generateTestSchedule] Days in month: ${daysInMonth}`); // Log: Days count
-    const shifts = ['白班', '配器械班', '小夜班', '大夜班', '12-8班', '9-5班', '白班待命', '小夜待命', '大夜待命', 'Off日待', 'Off夜待', '休假', '例假'];
-    const offShiftTypes = ['休假', '例假', 'Off日待', 'Off夜待'];
+    const allShiftNames = Array.from(shiftDetailsMap.keys());
+    const workShiftNames = allShiftNames.filter(name => shiftDetailsMap.get(name)?.isWorkShift);
+    const offShiftNames = ['休假', '例假']; // Define off shifts specifically
 
-    for (let day = 1; day <= daysInMonth; day++) {
-        // console.log(`[generateTestSchedule] Processing day ${day}`); // Log: Processing day (can be verbose)
-        const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-        let dailyShifts: string[] = [];
-        const numEmployees = employees.length;
-        const maxOffShifts = Math.max(1, Math.floor(numEmployees / 3));
-        let currentOffShifts = 0;
+    // 輔助函數：檢查是否滿足12小時間隔 (保留之前的定義)
+    const checkIntervalRule = (prevAssignment: ShiftAssignment | null, currentShiftName: string, currentDateStr: string): boolean => {
+        if (!prevAssignment) return true;
+        const prevShiftDetails = shiftDetailsMap.get(prevAssignment.shiftName);
+        const currentShiftDetails = shiftDetailsMap.get(currentShiftName);
+        if (!prevShiftDetails?.isWorkShift || !currentShiftDetails?.isWorkShift) return true;
+        const prevEndTimeStr = prevShiftDetails.endTime;
+        const currentStartTimeStr = currentShiftDetails.startTime;
+        if (!prevEndTimeStr || !currentStartTimeStr) return true;
+        let prevEndDateTime = getShiftDateTime(prevAssignment.date, prevEndTimeStr);
+        let currentStartDateTime = getShiftDateTime(currentDateStr, currentStartTimeStr);
+        if (!prevEndDateTime || !currentStartDateTime) return false;
+        if (doesShiftSpanMidnight(prevAssignment.shiftName)) {
+            prevEndDateTime = addDays(prevEndDateTime, 1);
+        }
+        const intervalHours = differenceInHours(currentStartDateTime, prevEndDateTime);
+        return intervalHours >= 12;
+    };
 
-        // 1. 建立每日班別池
-        for (let i = 0; i < numEmployees; i++) {
-            let randomShift: string;
-            let attempts = 0;
-            do {
-                randomShift = shifts[Math.floor(Math.random() * shifts.length)];
-                attempts++;
-                if (((offShiftTypes.includes(randomShift) && currentOffShifts < maxOffShifts) || !offShiftTypes.includes(randomShift)) || attempts > shifts.length * 2) {
-                    break;
-                }
-            } while (true);
-
-            if (attempts > shifts.length * 2 && offShiftTypes.includes(randomShift)) {
-                do {
-                    randomShift = shifts[Math.floor(Math.random() * shifts.length)];
-                } while (offShiftTypes.includes(randomShift));
+    // 輔助函數：檢查7休2規則 (休假和例假) (保留之前的定義)
+    const check7DayRestRule = (employeeId: string, currentDateStr: string): { needsRest: boolean, needsMandatory: boolean } => {
+        const currentCheckDate = parse(currentDateStr, 'yyyy-MM-dd', new Date());
+        const startDate = subDays(currentCheckDate, 6);
+        let hasRestDay = false;
+        let hasMandatoryOff = false;
+        const employeeAssignments = assignments.filter(a => a.employeeId === employeeId);
+        for (let i = 0; i <= 6; i++) {
+            const checkDate = subDays(currentCheckDate, i);
+            const checkDateStr = format(checkDate, 'yyyy-MM-dd');
+            const assignmentOnDate = employeeAssignments.find(a => a.date === checkDateStr);
+            if (assignmentOnDate) {
+                const details = shiftDetailsMap.get(assignmentOnDate.shiftName);
+                if (details?.isRestDay) hasRestDay = true;
+                if (details?.isMandatoryOff) hasMandatoryOff = true;
             }
-
-            dailyShifts.push(randomShift);
-            if (offShiftTypes.includes(randomShift)) {
-                currentOffShifts++;
-            }
         }
-        // console.log(`[generateTestSchedule] Day ${day} initial pool:`, dailyShifts); // Log: Daily pool before shuffle
+        return { needsRest: !hasRestDay, needsMandatory: !hasMandatoryOff };
+    };
 
-        // 確保班別數量足夠
-        while (dailyShifts.length < numEmployees) {
-            console.warn(`[generateTestSchedule] Day ${day} pool size mismatch. Fixing...`); // Log: Fixing pool size
-            let randomWorkShift: string;
-            do {
-                randomWorkShift = shifts[Math.floor(Math.random() * shifts.length)];
-            } while (offShiftTypes.includes(randomWorkShift));
-            dailyShifts.push(randomWorkShift);
-        }
+    // 逐員工、逐天生成班別
+    employees.forEach(employee => {
+        let consecutiveWorkDays = 0; // 為每個員工追蹤連續工作天數
 
-        // 2. 隨機打亂每日班別池
-        for (let i = dailyShifts.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [dailyShifts[i], dailyShifts[j]] = [dailyShifts[j], dailyShifts[i]];
-        }
-        // console.log(`[generateTestSchedule] Day ${day} shuffled pool:`, dailyShifts); // Log: Daily pool after shuffle
+        for (let day = 1; day <= daysInMonth; day++) {
+            const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+            // 獲取該員工前一天的排班
+            const prevAssignment = assignments
+                .slice()
+                .reverse()
+                .find(a => a.employeeId === employee.id);
 
+            const { needsRest, needsMandatory } = check7DayRestRule(employee.id, dateStr);
 
-        // 3. 分配給員工
-        employees.forEach((employee, index) => {
-            if (index < dailyShifts.length) {
-                assignments.push({
-                    employeeId: employee.id,
-                    date: dateStr,
-                    shiftName: dailyShifts[index]
-                });
+            let chosenShift: string;
+
+            // 1. 優先處理必須的休息日 (僅在有足夠歷史數據時強制執行)
+            if (day >= 7 && needsMandatory) {
+                chosenShift = '例假';
+            } else if (day >= 7 && needsRest) {
+                chosenShift = '休假';
             } else {
-                console.error(`[generateTestSchedule] Error assigning shift for employee ${employee.id} on day ${day}. Index out of bounds.`); // Log: Assignment error
+                // --- 包班目標設定 ---
+                let targetShift: string | null = null;
+                if (employees.length > 0 && employee.id === employees[0].id) { // 第一位員工目標：大夜班
+                    targetShift = '大夜班';
+                } else if (employees.length > 1 && employee.id === employees[1].id) { // 第二位員工目標：小夜班
+                    targetShift = '小夜班';
+                }
+
+                // 檢查目標班別是否可行 (符合間隔規則)
+                const isTargetShiftValid = targetShift && checkIntervalRule(prevAssignment ?? null, targetShift, dateStr);
+
+                if (isTargetShiftValid) {
+                    // 如果目標班別可行，直接選用
+                    chosenShift = targetShift!;
+                } else {
+                    // --- 如果目標班別不可行，或非目標員工，則執行原隨機邏輯 ---
+                    // 2. 找出符合間隔規則的可用工作班別
+                    const validWorkShifts = workShiftNames.filter(shiftName =>
+                        checkIntervalRule(prevAssignment ?? null, shiftName, dateStr)
+                    );
+
+                    // 3. 建立所有可能的班別選項（包括休息日）
+                    let possibleShifts: string[] = [];
+                    if (validWorkShifts.length > 0) {
+                        possibleShifts.push(...validWorkShifts);
+                    }
+                    possibleShifts.push(...offShiftNames);
+
+                    // 4. 決定班別：考慮連續工作天數傾向
+                    if (consecutiveWorkDays >= 5 && possibleShifts.some(s => offShiftNames.includes(s))) {
+                        const availableOffDays = possibleShifts.filter(s => offShiftNames.includes(s));
+                        chosenShift = availableOffDays[Math.floor(Math.random() * availableOffDays.length)];
+                    } else if (possibleShifts.length > 0) {
+                        chosenShift = possibleShifts[Math.floor(Math.random() * possibleShifts.length)];
+                    } else {
+                        console.warn(`[generateTestSchedule] Could not find ANY valid shift for ${employee.name} on ${dateStr}. Assigning '休假' as fallback.`);
+                        chosenShift = '休假';
+                    }
+                    // --- 原隨機邏輯結束 ---
+                }
             }
-        });
-    }
-    console.log(`[generateTestSchedule] Finished generation. Total assignments: ${assignments.length}`); // Log: Finish
+
+            // 記錄選擇的班別
+            assignments.push({ employeeId: employee.id, date: dateStr, shiftName: chosenShift });
+
+            // 更新連續工作天數計數器
+            if (shiftDetailsMap.get(chosenShift)?.isWorkShift) {
+                consecutiveWorkDays++;
+            } else {
+                consecutiveWorkDays = 0; // 休息日重置計數器
+            }
+        }
+        // employee loop ends, consecutiveWorkDays resets implicitly for next employee
+    });
+
+    console.log(`[generateTestSchedule] Finished generation with rules & bias. Total assignments: ${assignments.length}`); // Log: Finish
     return assignments;
 };
 
@@ -436,6 +484,46 @@ const getFilteredShiftDisplays = (
     return result;
 };
 
+// 將統計函數移到元件外部
+const calculateShiftStatistics = (assignments: ShiftAssignment[], employees: Employee[]) => {
+    const statistics: { [key: string]: { [key: string]: number } } = {};
+
+    // 初始化統計物件
+    employees.forEach(emp => {
+        statistics[emp.id] = { // Use emp.id consistently
+            '白班': 0,
+            '配器械班': 0,
+            '小夜班': 0,
+            '大夜班': 0,
+            '12-8班': 0,
+            '9-5班': 0,
+            '白班待命': 0,
+            '小夜待命': 0,
+            '大夜待命': 0,
+            'Off日待': 0,
+            'Off夜待': 0,
+            '休假': 0,
+            '例假': 0
+        };
+    });
+
+    // 統計每個員工的班別數量
+    assignments.forEach(assignment => {
+        // 確保用 employee.id 來查找
+        const employee = employees.find(e => e.id === assignment.employeeId);
+        if (employee && statistics[employee.id]) {
+            if (statistics[employee.id][assignment.shiftName] !== undefined) {
+                statistics[employee.id][assignment.shiftName]++;
+            } else {
+                // Optionally log or handle unexpected shift names
+                console.warn(`Unknown shift name found during statistics: ${assignment.shiftName}`);
+            }
+        }
+    });
+
+    return statistics;
+};
+
 const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解構 employees
     const { drawerOpen } = useDrawer();
     const [currentDate, setCurrentDate] = useState<Date>(new Date());
@@ -447,6 +535,7 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
     const [selectedEmployees, setSelectedEmployees] = useState<string[]>([]);
     const [validationErrors, setValidationErrors] = useState<string[]>([]); // State for validation errors
     const [showSuccessSnackbar, setShowSuccessSnackbar] = useState(false); // State for success message
+    const [showValidationErrorDialog, setShowValidationErrorDialog] = useState(false); // State for error dialog
 
     // 當 employees prop 改變時，更新 selectedEmployees
     useEffect(() => {
@@ -566,8 +655,11 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
         console.log("Validating schedule...");
         const errors = validateScheduleRules(assignments, employees, currentDate.getFullYear(), currentDate.getMonth());
         setValidationErrors(errors);
-        if (errors.length === 0) {
+        if (errors.length > 0) {
+            setShowValidationErrorDialog(true); // Show error dialog if errors exist
+        } else {
             setShowSuccessSnackbar(true); // Show success message if no errors
+            setShowValidationErrorDialog(false); // Ensure dialog is closed if no errors
         }
         console.log("Validation errors:", errors);
     };
@@ -581,12 +673,9 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
     };
 
     const handleGenerateTestSchedule = () => {
-        const year = currentDate.getFullYear();
-        const month = currentDate.getMonth();
-        const testAssignments = generateTestSchedule(year, month, employees);
-        // console.log('[handleGenerateTestSchedule] Generated Assignments:', testAssignments);
-        setAssignments(testAssignments);
-        setValidationErrors([]); // Clear previous validation errors when generating new schedule
+        const newAssignments = generateTestSchedule(currentDate.getFullYear(), currentDate.getMonth(), employees);
+        console.log("Generated Test Assignments:", newAssignments); // Log generated data
+        setAssignments(newAssignments);
     };
 
     // 處理員工選擇
@@ -609,40 +698,6 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
         }
     };
 
-    // 在 Schedule 組件中添加統計函數
-    const calculateShiftStatistics = () => {
-        const statistics: { [key: string]: { [key: string]: number } } = {};
-
-        // 初始化統計物件
-        employees.forEach(emp => {
-            statistics[emp.employeeId] = {
-                '白班': 0,
-                '配器械班': 0,
-                '小夜班': 0,
-                '大夜班': 0,
-                '12-8班': 0,
-                '9-5班': 0,
-                '白班待命': 0,
-                '小夜待命': 0,
-                '大夜待命': 0,
-                'Off日待': 0,
-                'Off夜待': 0,
-                '休假': 0,
-                '例假': 0
-            };
-        });
-
-        // 統計每個員工的班別數量
-        assignments.forEach(assignment => {
-            if (statistics[assignment.employeeId]) {
-                statistics[assignment.employeeId][assignment.shiftName] =
-                    (statistics[assignment.employeeId][assignment.shiftName] || 0) + 1;
-            }
-        });
-
-        return statistics;
-    };
-
     // Log: Check assignments state during render
     console.log(`[Schedule Render] Assignments length: ${assignments.length}`);
 
@@ -651,9 +706,7 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
             display: 'flex',
             flexDirection: 'column',
             width: '100%',
-            height: 'calc(100vh - 64px)',
             p: 2,
-            overflowY: 'auto'
         }}>
             {/* Header Section */}
             <Box sx={{
@@ -700,25 +753,8 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
                 </Box>
             </Box>
 
-            {/* Validation Error Display */}
-            {validationErrors.length > 0 && (
-                <Alert severity="error" sx={{ mb: 2, flexShrink: 0 }}>
-                    <Typography variant="h6" gutterBottom>排班規則檢查結果：</Typography>
-                    <List dense>
-                        {validationErrors.map((error, index) => (
-                            <ListItem key={index} sx={{ pl: 0 }}>
-                                <ListItemIcon sx={{ minWidth: '30px' }}>
-                                    <ErrorOutlineIcon fontSize="small" />
-                                </ListItemIcon>
-                                <ListItemText primary={error} />
-                            </ListItem>
-                        ))}
-                    </List>
-                </Alert>
-            )}
-
             {/* Main Content Area (Employee List + Calendar) */}
-            <Box sx={{ display: 'flex', gap: 2, flexGrow: 1, minHeight: 0 }}>
+            <Box sx={{ display: 'flex', gap: 2 }}>
                 {/* Employee List Sidebar */}
                 <Paper sx={{
                     width: drawerOpen ? 200 : 0,
@@ -770,17 +806,10 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
                 <Paper sx={{
                     flexGrow: 1,
                     display: 'flex',
-                    flexDirection: 'column'
+                    flexDirection: 'column',
                 }}>
-                    <TableContainer sx={{ flexGrow: 1, overflow: 'auto' }}>
-                        <Table sx={{
-                            tableLayout: 'fixed',
-                            '& td': {
-                                width: `${100 / 7}%`,
-                                minWidth: 120,
-                                border: '1px solid #eee'
-                            }
-                        }}>
+                    <TableContainer component={Paper} sx={{ mt: 2, position: 'relative', zIndex: 1 }}>
+                        <Table stickyHeader aria-label="sticky schedule table">
                             <TableHead>
                                 <TableRow>
                                     {weekDayNames.map((day) => (
@@ -991,7 +1020,36 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
                 </Alert>
             </Snackbar>
 
-            {/* Statistics Table (moved outside main flex box to prevent height issues) */}
+            {/* Validation Error Dialog */}
+            <Dialog
+                open={showValidationErrorDialog}
+                onClose={() => setShowValidationErrorDialog(false)}
+                maxWidth="md" // Adjust size as needed
+            >
+                <DialogTitle sx={{ display: 'flex', alignItems: 'center' }}>
+                    <ErrorOutlineIcon sx={{ mr: 1, color: 'error.main' }} />
+                    排班規則檢查結果
+                </DialogTitle>
+                <DialogContent dividers>
+                    <List dense>
+                        {validationErrors.map((error, index) => (
+                            <ListItem key={index}>
+                                <ListItemIcon sx={{ minWidth: '30px' }}>
+                                    <ErrorOutlineIcon fontSize="small" color="error" />
+                                </ListItemIcon>
+                                <ListItemText primary={error} />
+                            </ListItem>
+                        ))}
+                    </List>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setShowValidationErrorDialog(false)} color="primary">
+                        關閉
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
+            {/* Statistics Table */}
             <Paper sx={{ mt: 2, p: 2, overflowX: 'auto', flexShrink: 0 }}>
                 <Typography variant="h6" sx={{ mb: 2 }}>
                     本月班別統計
@@ -1017,14 +1075,18 @@ const Schedule: React.FC<ScheduleProps> = ({ employees }) => { // 從 props 解�
                     </TableHead>
                     <TableBody>
                         {employees.map(employee => {
-                            const stats = calculateShiftStatistics()[employee.id] || {};
+                            const stats = calculateShiftStatistics(assignments, employees)[employee.id] || {};
                             return (
                                 <TableRow key={employee.id}>
                                     <TableCell>{employee.name}</TableCell>
                                     <TableCell align="center">{stats['白班'] || 0}</TableCell>
                                     <TableCell align="center">{stats['配器械班'] || 0}</TableCell>
-                                    <TableCell align="center">{stats['小夜班'] || 0}</TableCell>
-                                    <TableCell align="center">{stats['大夜班'] || 0}</TableCell>
+                                    <TableCell align="center" sx={{ color: (stats['小夜班'] || 0) >= 15 ? 'orange' : 'inherit' }}>
+                                        {stats['小夜班'] || 0}
+                                    </TableCell>
+                                    <TableCell align="center" sx={{ color: (stats['大夜班'] || 0) >= 15 ? 'orange' : 'inherit' }}>
+                                        {stats['大夜班'] || 0}
+                                    </TableCell>
                                     <TableCell align="center">{stats['12-8班'] || 0}</TableCell>
                                     <TableCell align="center">{stats['9-5班'] || 0}</TableCell>
                                     <TableCell align="center">{stats['白班待命'] || 0}</TableCell>
